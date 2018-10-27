@@ -1,6 +1,12 @@
 max_epochs = 1000
 steps_per_eval = int(1e9)
 tau = 1.
+
+# policy gradient configs
+n_samples = 10
+sample_max_decoding_length = 50
+
+# inference configs
 infer_beam_width = 10
 infer_max_decoding_length = 50
 

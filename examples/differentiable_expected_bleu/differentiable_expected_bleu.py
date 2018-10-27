@@ -120,11 +120,31 @@ def build_model(batch, train_data):
         loss_debleu,
         hparams=config_train.train_debleu)
 
-    # inference: beam search decoding
+    # start and end tokens
     start_tokens = tf.ones_like(batch['target_length']) * \
             train_data.target_vocab.bos_token_id
     end_token = train_data.target_vocab.eos_token_id
 
+    # policy gradient with sampling average as baseline
+    n_samples = config_train.n_samples
+
+    def untile(a):
+        return tf.reshape(a, tf.concat([[-1, n_samples], tf.shape(a)[1:]], -1))
+
+    tiled_start_tokens = tf.reshape(
+        tf.tile(tf.expand_dims(start_tokens, 1), [1, n_samples]), [-1])
+
+    sp_outputs, _, sp_lengths = decoder(
+        decoding_strategy='infer_sample',
+        embedding=target_embedder,
+        start_tokens=tiled_start_tokens,
+        end_token=end_token,
+        max_decoding_length=config_train.sample_max_decoding_length)
+
+    sp_ids = sp_outputs.sample_id
+    sp_ids, sp_lengths = map(untile, (sp_ids, sp_lengths))
+
+    # inference: beam search decoding
     bs_outputs, _, _ = tx.modules.beam_search_decode(
         decoder_or_cell=decoder,
         embedding=target_embedder,
