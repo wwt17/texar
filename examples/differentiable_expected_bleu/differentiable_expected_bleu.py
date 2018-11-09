@@ -111,10 +111,14 @@ def build_model(batch, train_data):
         inputs=target_embedder(batch['target_text_ids'][:, :-1]),
         sequence_length=batch['target_length']-1)
 
+    sequence_length = batch['target_length'] - 1
     loss_xe = tx.losses.sequence_sparse_softmax_cross_entropy(
         labels=batch['target_text_ids'][:, 1:],
         logits=tf_outputs.logits,
-        sequence_length=batch['target_length']-1)
+        sequence_length=sequence_length,
+        average_across_batch=False,
+        sum_over_batch=True
+    ) / tf.cast(tf.reduce_sum(sequence_length), tf.float32)
 
     train_ops[xe_names[0]] = tx.core.get_train_op(
         loss_xe,
