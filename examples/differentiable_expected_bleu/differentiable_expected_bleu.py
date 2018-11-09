@@ -163,6 +163,7 @@ def build_model(batch, train_data):
         end_token=end_token,
         initial_state=dec_initial_state,
         beam_width=config_train.infer_beam_width,
+        length_penalty_weight=config_train.length_penalty_weight,
         max_decoding_length=config_train.infer_max_decoding_length)
 
     return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs
