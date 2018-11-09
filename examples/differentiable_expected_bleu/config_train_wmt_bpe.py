@@ -2,7 +2,7 @@ max_epochs = 100000
 steps_per_eval = 1000
 tau = 1.
 infer_beam_width = 10
-infer_max_decoding_length = 256
+infer_max_decoding_length = 50
 length_penalty_weight = 1.0
 
 threshold_steps = 20000

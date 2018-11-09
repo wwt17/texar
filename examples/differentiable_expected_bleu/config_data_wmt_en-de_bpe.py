@@ -7,12 +7,12 @@ train_0 = {
     'source_dataset': {
         "files": 'data/wmt_en-de_bpe/train.en',
         'vocab_file': source_vocab_file,
-        'max_seq_length': 256
+        'max_seq_length': 50
     },
     'target_dataset': {
         'files': 'data/wmt_en-de_bpe/train.de',
         'vocab_file': target_vocab_file,
-        'max_seq_length': 256
+        'max_seq_length': 50
     },
 }
 
