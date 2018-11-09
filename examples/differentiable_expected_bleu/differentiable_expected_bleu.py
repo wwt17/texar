@@ -27,6 +27,8 @@ import texar as tx
 
 from nltk.translate.bleu_score import corpus_bleu
 
+import pickle
+
 flags = tf.flags
 
 flags.DEFINE_string("config_model", "config_model_medium", "The model config.")
@@ -40,6 +42,7 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "expr_name is restored.")
 flags.DEFINE_boolean("reinitialize", True, "Whether to reinitialize the state "
                      "of the optimizers before training and after annealing.")
+flags.DEFINE_string("pickle_prefix", "", "pickle dump val/test result prefix.")
 
 FLAGS = flags.FLAGS
 
@@ -49,6 +52,7 @@ config_train = importlib.import_module(FLAGS.config_train)
 expr_name = FLAGS.expr_name
 restore_from = FLAGS.restore_from
 reinitialize = FLAGS.reinitialize
+pickle_prefix = FLAGS.pickle_prefix
 phases = config_train.phases
 
 xe_names = ('xe_0', 'xe_1')
@@ -165,7 +169,16 @@ def build_model(batch, train_data):
         beam_width=config_train.infer_beam_width,
         max_decoding_length=config_train.infer_max_decoding_length)
 
-    return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs
+    # sampling:
+    sample_outputs, _, sample_length = decoder(
+        decoding_strategy='infer_sample',
+        embedding=target_embedder,
+        start_tokens=start_tokens,
+        end_token=end_token,
+        initial_state=dec_initial_state,
+        max_decoding_length=config_train.infer_max_decoding_length)
+
+    return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs, sample_outputs, loss_debleu
 
 
 def main():
@@ -182,7 +195,7 @@ def main():
 
     global_step = tf.train.create_global_step()
 
-    train_ops, tm_helper, mask_pattern_, infer_outputs = build_model(
+    train_ops, tm_helper, mask_pattern_, bs_outputs, sample_outputs, loss_debleu = build_model(
         data_batch, train_0_data)
 
     def get_train_op_scope(name):
@@ -293,29 +306,42 @@ def main():
         data_iterator.restart_dataset(sess, mode)
         feed_dict = {
             tx.global_mode(): tf.estimator.ModeKeys.EVAL,
-            data_iterator.handle: data_iterator.get_handle(sess, mode)
+            data_iterator.handle: data_iterator.get_handle(sess, mode),
+            mask_pattern_[0]: 1,
+            mask_pattern_[1]: 0,
         }
 
         ref_hypo_pairs = []
         fetches = [
             data_batch['target_text'][:, 1:],
-            infer_outputs.predicted_ids[:, :, 0]
+            bs_outputs.predicted_ids[:, :, 0],
+            sample_outputs.sample_id,
+            loss_debleu,
         ]
 
-        while True:
-            try:
-                target_texts_ori, output_ids = sess.run(fetches, feed_dict)
-                target_texts = tx.utils.strip_special_tokens(
-                    target_texts_ori.tolist(), is_token_list=True)
-                output_texts = tx.utils.map_ids_to_strs(
-                    ids=output_ids.tolist(), vocab=val_data.target_vocab,
-                    join=False)
+        with open('{}{}.pkl'.format(pickle_prefix, mode), 'wb') as pickle_file:
+            while True:
+                try:
+                    target_texts_ori, bs_output_ids, sample_output_ids, _loss_debleu = \
+                        sess.run(fetches, feed_dict)
+                    target_texts = tx.utils.strip_special_tokens(
+                        target_texts_ori.tolist(), is_token_list=True)
+                    bs_output_texts = tx.utils.map_ids_to_strs(
+                        ids=bs_output_ids.tolist(), vocab=val_data.target_vocab,
+                        join=False)
+                    sample_output_texts = tx.utils.map_ids_to_strs(
+                        ids=sample_output_ids.tolist(), vocab=val_data.target_vocab,
+                        join=False)
 
-                ref_hypo_pairs.extend(
-                    zip(map(lambda x: [x], target_texts), output_texts))
+                    pickle.dump(
+                        (target_texts, bs_output_texts, sample_output_texts),
+                        pickle_file)
 
-            except tf.errors.OutOfRangeError:
-                break
+                    ref_hypo_pairs.extend(
+                        zip(map(lambda x: [x], target_texts), bs_output_texts))
+
+                except tf.errors.OutOfRangeError:
+                    break
 
         refs, hypos = zip(*ref_hypo_pairs)
         bleu = corpus_bleu(refs, hypos) * 100
