@@ -320,6 +320,7 @@ def main():
         ]
 
         with open('{}{}.pkl'.format(pickle_prefix, mode), 'wb') as pickle_file:
+            cnt = 0
             while True:
                 try:
                     target_texts_ori, bs_output_ids, sample_output_ids, _loss_debleu = \
@@ -339,6 +340,8 @@ def main():
 
                     ref_hypo_pairs.extend(
                         zip(map(lambda x: [x], target_texts), bs_output_texts))
+                    cnt += 1
+                    print(cnt)
 
                 except tf.errors.OutOfRangeError:
                     break
