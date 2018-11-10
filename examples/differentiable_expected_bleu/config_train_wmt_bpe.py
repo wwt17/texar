@@ -20,7 +20,7 @@ train_xe_0 = {
     "optimizer": {
         "type": "AdamOptimizer",
         "kwargs": {
-            "learning_rate": 1e-4
+            "learning_rate": 1e-3
         }
     },
     "gradient_clip": {

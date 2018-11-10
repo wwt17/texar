@@ -345,7 +345,8 @@ def get_gradient_clip_fn(hparams=None):
 
 
 def get_train_op(loss, variables=None, learning_rate=None,
-                 global_step=None, increment_global_step=True, hparams=None):
+                 global_step=None, increment_global_step=True, hparams=None,
+                 **kwargs):
     """Creates a training op.
 
     This is a wrapper of :tf_main:`tf.contrib.layers.optimize_loss
@@ -407,6 +408,7 @@ def get_train_op(loss, variables=None, learning_rate=None,
         learning_rate_decay_fn=lr_decay_fn,
         variables=variables,
         name=hparams["name"],
-        increment_global_step=increment_global_step)
+        increment_global_step=increment_global_step,
+        **kwargs)
 
     return train_op

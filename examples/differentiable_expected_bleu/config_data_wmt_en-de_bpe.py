@@ -2,7 +2,7 @@ source_vocab_file = 'data/wmt_en-de_bpe/vocab.en'
 target_vocab_file = 'data/wmt_en-de_bpe/vocab.de'
 
 train_0 = {
-    'batch_size': 160,
+    'batch_size': 128,
     'allow_smaller_final_batch': False,
     'source_dataset': {
         "files": 'data/wmt_en-de_bpe/train.en',
