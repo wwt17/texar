@@ -334,7 +334,7 @@ def main():
                         join=False)
 
                     pickle.dump(
-                        (target_texts, bs_output_texts, sample_output_texts),
+                        (target_texts, bs_output_texts, sample_output_texts, _loss_debleu),
                         pickle_file)
 
                     ref_hypo_pairs.extend(
