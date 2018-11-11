@@ -17,6 +17,7 @@
 from __future__ import absolute_import
 from __future__ import print_function
 from __future__ import division
+from __future__ import unicode_literals
 
 #pylint: disable=invalid-name, too-many-arguments, too-many-locals
 
@@ -58,8 +59,10 @@ debleu_names = ('debleu_0', 'debleu_1')
 
 dir_model = os.path.join(expr_name, 'ckpt')
 dir_best = os.path.join(expr_name, 'ckpt-best')
+dir_eval = os.path.join(expr_name, 'ckpt-eval')
 ckpt_model = os.path.join(dir_model, 'model.ckpt')
 ckpt_best = os.path.join(dir_best, 'model.ckpt')
+ckpt_eval = os.path.join(dir_eval, 'model.ckpt')
 
 
 def get_scope_by_name(tensor):
@@ -351,32 +354,40 @@ def main():
             data_iterator.handle: data_iterator.get_handle(sess, mode)
         }
 
+        step = tf.train.global_step(sess, global_step)
+
         ref_hypo_pairs = []
         fetches = [
             data_batch['target_text'][:, 1:],
             infer_outputs.predicted_ids[:, :, 0]
         ]
 
-        while True:
-            try:
-                target_texts_ori, output_ids = sess.run(fetches, feed_dict)
-                target_texts = tx.utils.strip_special_tokens(
-                    target_texts_ori.tolist(), is_token_list=True)
-                output_texts = tx.utils.map_ids_to_strs(
-                    ids=output_ids.tolist(), vocab=val_data.target_vocab,
-                    join=False)
+        if not os.path.exists(dir_eval):
+            os.mkdir(dir_eval)
+        with open('{}-{}.{}.ref_hypo_pairs'.format(ckpt_eval, step, mode), 'w')\
+                as result_file:
+            while True:
+                try:
+                    target_texts_ori, output_ids = sess.run(fetches, feed_dict)
+                    target_texts = tx.utils.strip_special_tokens(
+                        target_texts_ori.tolist(), is_token_list=True)
+                    output_texts = tx.utils.map_ids_to_strs(
+                        ids=output_ids.tolist(), vocab=val_data.target_vocab,
+                        join=False)
 
-                ref_hypo_pairs.extend(
-                    zip(map(lambda x: [x], target_texts), output_texts))
+                    for ref, hypo in zip(target_texts, output_texts):
+                        for sent in (ref, hypo):
+                            print(' '.join(sent), file=result_file)
 
-            except tf.errors.OutOfRangeError:
-                break
+                    ref_hypo_pairs.extend(
+                        zip(map(lambda x: [x], target_texts), output_texts))
+
+                except tf.errors.OutOfRangeError:
+                    break
 
         refs, hypos = zip(*ref_hypo_pairs)
         bleu = corpus_bleu(refs, hypos) * 100
         print('{} BLEU: {}'.format(mode, bleu))
-
-        step = tf.train.global_step(sess, global_step)
 
         summary = tf.Summary()
         summary.value.add(tag='{}/BLEU'.format(mode), simple_value=bleu)
