@@ -40,6 +40,7 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "expr_name is restored.")
 flags.DEFINE_boolean("reinitialize", True, "Whether to reinitialize the state "
                      "of the optimizers before training and after annealing.")
+flags.DEFINE_integer("n_gpu", 1, "Number of GPUs to use in parallel.")
 
 FLAGS = flags.FLAGS
 
@@ -49,6 +50,7 @@ config_train = importlib.import_module(FLAGS.config_train)
 expr_name = FLAGS.expr_name
 restore_from = FLAGS.restore_from
 reinitialize = FLAGS.reinitialize
+n_gpu = FLAGS.n_gpu
 phases = config_train.phases
 
 xe_names = ('xe_0', 'xe_1')
@@ -69,52 +71,123 @@ def build_model(batch, train_data):
     """
     train_ops = {}
 
+    splitted_batch = {
+        name: tf.split(tensor, n_gpu) for name, tensor in batch.items()}
+
     source_embedder = tx.modules.WordEmbedder(
         vocab_size=train_data.source_vocab.size, hparams=config_model.embedder)
 
     encoder = tx.modules.BidirectionalRNNEncoder(
         hparams=config_model.encoder)
 
-    enc_outputs, enc_final_state = encoder(
-        source_embedder(batch['source_text_ids']))
-
     target_embedder = tx.modules.WordEmbedder(
         vocab_size=train_data.target_vocab.size, hparams=config_model.embedder)
 
-    decoder = tx.modules.AttentionRNNDecoder(
-        memory=tf.concat(enc_outputs, axis=2),
-        memory_sequence_length=batch['source_length'],
-        vocab_size=train_data.target_vocab.size,
-        hparams=config_model.decoder)
+    # teacher mask + DEBLEU fine-tuning
+    n_unmask = tf.placeholder(tf.int32, shape=[], name="n_unmask")
+    n_mask = tf.placeholder(tf.int32, shape=[], name="n_mask")
 
-    if config_model.connector is None:
-        dec_initial_state = None
+    splitted_result = {}
 
-    else:
-        enc_final_state = tf.contrib.framework.nest.map_structure(
-            lambda *args: tf.concat(args, -1), *enc_final_state)
+    for gpu_id in range(n_gpu):
+        _batch = {
+            name: tensor[gpu_id] for name, tensor in splitted_batch.items()}
 
-        if isinstance(decoder.cell, tf.nn.rnn_cell.LSTMCell):
-            connector = tx.modules.MLPTransformConnector(
-                decoder.state_size.h, hparams=config_model.connector)
-            dec_initial_h = connector(enc_final_state.h)
-            dec_initial_state = (dec_initial_h, enc_final_state.c)
-        else:
-            connector = tx.modules.MLPTransformConnector(
-                decoder.state_size, hparams=config_model.connector)
-            dec_initial_state = connector(enc_final_state)
+        with tf.device('gpu:{}'.format(gpu_id)):
+            with tf.variable_scope('model', reuse=tf.AUTO_REUSE):
+
+                enc_outputs, enc_final_state = encoder(
+                    source_embedder(_batch['source_text_ids']))
+
+                decoder = tx.modules.AttentionRNNDecoder(
+                    memory=tf.concat(enc_outputs, axis=2),
+                    memory_sequence_length=_batch['source_length'],
+                    vocab_size=train_data.target_vocab.size,
+                    hparams=config_model.decoder)
+
+                if config_model.connector is None:
+                    dec_initial_state = None
+
+                else:
+                    enc_final_state = tf.contrib.framework.nest.map_structure(
+                        lambda *args: tf.concat(args, -1), *enc_final_state)
+
+                    if isinstance(decoder.cell, tf.nn.rnn_cell.LSTMCell):
+                        connector = tx.modules.MLPTransformConnector(
+                            decoder.state_size.h, hparams=config_model.connector)
+                        dec_initial_h = connector(enc_final_state.h)
+                        dec_initial_state = (dec_initial_h, enc_final_state.c)
+                    else:
+                        connector = tx.modules.MLPTransformConnector(
+                            decoder.state_size, hparams=config_model.connector)
+                        dec_initial_state = connector(enc_final_state)
+
+                _result = {}
+
+                # cross-entropy + teacher-forcing pretraining
+                _result['tf_outputs'], _, _ = decoder(
+                    decoding_strategy='train_greedy',
+                    initial_state=dec_initial_state,
+                    inputs=target_embedder(_batch['target_text_ids'][:, :-1]),
+                    sequence_length=_batch['target_length']-1)
+
+                # teacher mask + DEBLEU fine-tuning
+                tm_helper = tx.modules.TeacherMaskSoftmaxEmbeddingHelper(
+                    # must not remove last token, since it may be used as mask
+                    inputs=_batch['target_text_ids'],
+                    sequence_length=_batch['target_length']-1,
+                    embedding=target_embedder,
+                    n_unmask=n_unmask,
+                    n_mask=n_mask,
+                    tau=config_train.tau)
+
+                _result['tm_outputs'], _, _ = decoder(
+                    helper=tm_helper,
+                    initial_state=dec_initial_state)
+
+                # inference: beam search decoding
+                start_tokens = tf.ones_like(_batch['target_length']) * \
+                        train_data.target_vocab.bos_token_id
+                end_token = train_data.target_vocab.eos_token_id
+
+                _result['bs_outputs'], _, _ = tx.modules.beam_search_decode(
+                    decoder_or_cell=decoder,
+                    embedding=target_embedder,
+                    start_tokens=start_tokens,
+                    end_token=end_token,
+                    initial_state=dec_initial_state,
+                    beam_width=config_train.infer_beam_width,
+                    length_penalty_weight=config_train.length_penalty_weight,
+                    max_decoding_length=config_train.infer_max_decoding_length)
+
+                for name, tensor in _result.items():
+                    if name not in splitted_result:
+                        splitted_result[name] = []
+                    splitted_result[name].append(tensor)
+
+    def concat(*tensors):
+        lengths = [tf.shape(tensor)[1] for tensor in tensors]
+        max_length = tf.reduce_max(tf.stack(lengths))
+        tensors = [
+            tf.concat([
+                tensor,
+                tf.zeros(
+                    tf.shape(tensor) + tf.one_hot(
+                        1, tf.shape(tf.shape(tensor))[0], max_length - 2 * length),
+                    dtype=tensor.dtype)],
+                axis=1)
+            for length, tensor in zip(lengths, tensors)]
+        return tf.concat(tensors, axis=0)
+
+    result = {
+        name: tf.contrib.framework.nest.map_structure(concat, *structures)
+        for name, structures in splitted_result.items()}
 
     # cross-entropy + teacher-forcing pretraining
-    tf_outputs, _, _ = decoder(
-        decoding_strategy='train_greedy',
-        initial_state=dec_initial_state,
-        inputs=target_embedder(batch['target_text_ids'][:, :-1]),
-        sequence_length=batch['target_length']-1)
-
     sequence_length = batch['target_length'] - 1
     loss_xe = tx.losses.sequence_sparse_softmax_cross_entropy(
         labels=batch['target_text_ids'][:, 1:],
-        logits=tf_outputs.logits,
+        logits=result['tf_outputs'].logits,
         sequence_length=sequence_length,
         average_across_batch=False,
         sum_over_batch=True
@@ -122,53 +195,30 @@ def build_model(batch, train_data):
 
     train_ops[xe_names[0]] = tx.core.get_train_op(
         loss_xe,
+        colocate_gradients_with_ops=True,
         hparams=config_train.train_xe_0)
     train_ops[xe_names[1]] = tx.core.get_train_op(
         loss_xe,
+        colocate_gradients_with_ops=True,
         hparams=config_train.train_xe_1)
 
     # teacher mask + DEBLEU fine-tuning
-    n_unmask = tf.placeholder(tf.int32, shape=[], name="n_unmask")
-    n_mask = tf.placeholder(tf.int32, shape=[], name="n_mask")
-    tm_helper = tx.modules.TeacherMaskSoftmaxEmbeddingHelper(
-        # must not remove last token, since it may be used as mask
-        inputs=batch['target_text_ids'],
-        sequence_length=batch['target_length']-1,
-        embedding=target_embedder,
-        n_unmask=n_unmask,
-        n_mask=n_mask,
-        tau=config_train.tau)
-
-    tm_outputs, _, _ = decoder(
-        helper=tm_helper,
-        initial_state=dec_initial_state)
-
     loss_debleu = tx.losses.debleu(
         labels=batch['target_text_ids'][:, 1:],
-        probs=tm_outputs.sample_id,
+        probs=result['tm_outputs'].sample_id,
         sequence_length=batch['target_length']-1)
 
     train_ops[debleu_names[0]] = tx.core.get_train_op(
         loss_debleu,
+        colocate_gradients_with_ops=True,
         hparams=config_train.train_debleu_0)
     train_ops[debleu_names[1]] = tx.core.get_train_op(
         loss_debleu,
+        colocate_gradients_with_ops=True,
         hparams=config_train.train_debleu_1)
 
     # inference: beam search decoding
-    start_tokens = tf.ones_like(batch['target_length']) * \
-            train_data.target_vocab.bos_token_id
-    end_token = train_data.target_vocab.eos_token_id
-
-    bs_outputs, _, _ = tx.modules.beam_search_decode(
-        decoder_or_cell=decoder,
-        embedding=target_embedder,
-        start_tokens=start_tokens,
-        end_token=end_token,
-        initial_state=dec_initial_state,
-        beam_width=config_train.infer_beam_width,
-        length_penalty_weight=config_train.length_penalty_weight,
-        max_decoding_length=config_train.infer_max_decoding_length)
+    bs_outputs = result['bs_outputs']
 
     return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs
 
@@ -348,7 +398,10 @@ def main():
         print('end _eval_epoch')
         return bleu
 
-    with tf.Session() as sess:
+    sess_config = tf.ConfigProto(
+        allow_soft_placement=True,
+        log_device_placement=False)
+    with tf.Session(config=sess_config) as sess:
         sess.run(tf.global_variables_initializer())
         sess.run(tf.local_variables_initializer())
         sess.run(tf.tables_initializer())
