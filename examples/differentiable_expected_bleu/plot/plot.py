@@ -23,42 +23,55 @@ def main():
             _data = []
             while True:
                 try:
-                    x, y, z, w = pickle.load(pickle_file)
-                    assert len(x) == len(y) == len(z) == 1
-                    _data.append((x[0], y[0], z[0], w))
+                    item = pickle.load(pickle_file)
+                    texts, losses = item[:3], item[3:]
+                    assert all(map(lambda s: len(s) == 1, texts))
+                    _data.append(tuple(map(lambda s: s[0], texts)) + losses)
                 except EOFError:
                     break
         if data is None:
-            data = [(x, y, [], w) for x, y, z, w in _data]
-        for A, B in zip(data, _data):
-            A[2].append(B[2])
+            data = [[[] for x in item] for item in _data]
+        for item, _item in zip(data, _data):
+            for x, _x in zip(item, _item):
+                x.append(_x)
+
+    for item in data:
+        for i in range(len(item)):
+            if i != 2:
+                x = item[i]
+                _x = x[0]
+                assert all(map(lambda e: e == _x, x))
+                item[i] = _x
+
     res = []
-    for target_sent, bs_sent, sample_sents, loss_debleu in data:
+    for target_sent, bs_sent, sample_sents, debleu_loss, mle_loss in data:
         bs_bleu = sentence_bleu([target_sent], bs_sent)
         sample_bleu = mean([sentence_bleu([target_sent], sample_sent) for sample_sent in sample_sents])
-        _res = bs_bleu, sample_bleu, math.exp(-loss_debleu)
+        debleu, mle = map(lambda x: math.exp(-x), debleu_loss, mle_loss)
+        _res = bs_bleu, sample_bleu, debleu, mle
         res.append(_res)
         #print("{}\n{}\n{}".format(' '.join(target_sent), ' '.join(bs_sent), ' '.join(sample_sents[0])))
         #print("{}\t{}\t{}".format(*_res))
 
-    labels = ['beam search BLEU', 'sample mean BLEU', 'DEBLEU']
-    colors = ['black', 'blue', 'green']
+    labels = ['beam search BLEU', 'sample mean BLEU', 'DEBLEU', 'MLE']
+    colors = ['saddlebrown', 'mediumblue', 'darkgreen', 'crimson']
 
     vals = list(zip(*res))
 
     fig = plt.figure()
     fig.set_size_inches(10, 15)
 
+    tot = (lambda x: x * (x-1) / 2)(len(labels))
     cnt = 0
     for i in range(len(labels)):
         for j in range(i+1, len(labels)):
             cnt += 1
-            ax = fig.add_subplot(320+cnt)
+            ax = fig.add_subplot(tot, 2, cnt)
             ax.set_xlabel(labels[i])
             ax.set_ylabel(labels[j])
             ax.scatter(vals[i], vals[j], s=1./3)
             cnt += 1
-            ax = fig.add_subplot(320+cnt)
+            ax = fig.add_subplot(tot, 2, cnt)
             points = list(zip(vals[i], vals[j]))
             points.sort()
             X = list(range(len(vals[i])))

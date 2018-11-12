@@ -178,7 +178,8 @@ def build_model(batch, train_data):
         initial_state=dec_initial_state,
         max_decoding_length=config_train.infer_max_decoding_length)
 
-    return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs, sample_outputs, loss_debleu
+    return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs, \
+        sample_outputs, loss_debleu, loss_xe
 
 
 def main():
@@ -195,8 +196,8 @@ def main():
 
     global_step = tf.train.create_global_step()
 
-    train_ops, tm_helper, mask_pattern_, bs_outputs, sample_outputs, loss_debleu = build_model(
-        data_batch, train_0_data)
+    train_ops, tm_helper, mask_pattern_, bs_outputs, sample_outputs, \
+        loss_debleu, loss_xe = build_model(data_batch, train_0_data)
 
     def get_train_op_scope(name):
         return get_scope_by_name(train_ops[name])
@@ -317,25 +318,28 @@ def main():
             bs_outputs.predicted_ids[:, :, 0],
             sample_outputs.sample_id,
             loss_debleu,
+            loss_xe,
         ]
 
         with open('{}{}.pkl'.format(pickle_prefix, mode), 'wb') as pickle_file:
             cnt = 0
             while True:
                 try:
-                    target_texts_ori, bs_output_ids, sample_output_ids, _loss_debleu = \
-                        sess.run(fetches, feed_dict)
+                    target_texts_ori, bs_output_ids, sample_output_ids, \
+                        _loss_debleu, _loss_xe = sess.run(fetches, feed_dict)
                     target_texts = tx.utils.strip_special_tokens(
                         target_texts_ori.tolist(), is_token_list=True)
                     bs_output_texts = tx.utils.map_ids_to_strs(
                         ids=bs_output_ids.tolist(), vocab=val_data.target_vocab,
                         join=False)
                     sample_output_texts = tx.utils.map_ids_to_strs(
-                        ids=sample_output_ids.tolist(), vocab=val_data.target_vocab,
+                        ids=sample_output_ids.tolist(),
+                        vocab=val_data.target_vocab,
                         join=False)
 
                     pickle.dump(
-                        (target_texts, bs_output_texts, sample_output_texts, _loss_debleu),
+                        (target_texts, bs_output_texts, sample_output_texts,
+                         _loss_debleu, _loss_xe),
                         pickle_file)
 
                     ref_hypo_pairs.extend(

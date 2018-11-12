@@ -33,7 +33,7 @@ train_1 = {
 
 
 val = {
-    'batch_size': 80,
+    'batch_size': 1,
     'shuffle': False,
     'source_dataset': {
         "files": 'data/iwslt14_de-en/valid.de',
@@ -46,7 +46,7 @@ val = {
 }
 
 test = {
-    'batch_size': 80,
+    'batch_size': 1,
     'shuffle': False,
     'source_dataset': {
         "files": 'data/iwslt14_de-en/test.de',
