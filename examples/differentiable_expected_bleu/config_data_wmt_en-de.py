@@ -19,7 +19,7 @@ train_0 = {
 train_1 = train_0
 
 val = {
-    'batch_size': 1,
+    'batch_size': 32,
     'shuffle': False,
     'source_dataset': {
         "files": 'data/wmt_en-de/dev.en',
@@ -32,7 +32,7 @@ val = {
 }
 
 test = {
-    'batch_size': 1,
+    'batch_size': 32,
     'shuffle': False,
     'source_dataset': {
         "files": 'data/wmt_en-de/test.en',
