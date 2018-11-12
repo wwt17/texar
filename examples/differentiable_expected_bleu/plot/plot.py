@@ -19,6 +19,7 @@ font = {
 }
 matplotlib.rc('font', **font)
 from nltk.translate.bleu_score import sentence_bleu
+from scipy.stats import pearsonr
 
 
 def mean(a):
@@ -74,8 +75,11 @@ def main(n):
 
     tot = (lambda x: x * (x-1) / 2)(len(labels))
     cnt = 0
+    pearsonr_file = open('pearsonr', 'w')
     for i in range(len(labels)):
         for j in range(i+1, len(labels)):
+            r, p = pearsonr(vals[i], vals[j])
+            print('{:.6f}\t{:.6f}'.format(r, p), file=pearsonr_file)
             cnt += 1
             ax = fig.add_subplot(tot, 2, cnt)
             ax.set_title('', fontsize=fontsize)
@@ -93,6 +97,7 @@ def main(n):
             plt.bar(X, [-b for a, b in points], facecolor=colors[j],
                     edgecolor=colors[j], label=labels[j])
             plt.legend(loc='upper left')
+    pearsonr_file.close()
 
     plt.savefig("figure.pdf")
     plt.savefig("figure.png")
