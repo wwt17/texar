@@ -304,11 +304,11 @@ def main():
         config_train.threshold_steps,
         config_train.minimum_interval_steps)
 
-    saver = tf.train.Saver(max_to_keep=None)
+    _saver = tf.train.Saver(max_to_keep=None)
 
     def _save_to(directory, step):
         print('saving to {} ...'.format(directory))
-        saved_path = saver.save(sess, directory, global_step=step)
+        saved_path = _saver.save(sess, directory, global_step=step)
 
         for trigger_name in ['convergence_trigger', 'annealing_trigger']:
             trigger = globals()[trigger_name]
@@ -321,9 +321,8 @@ def main():
 
     def _restore_from_path(ckpt_path, restore_trigger_names=None, relax=False):
         print('restoring from {} ...'.format(ckpt_path))
-        if relax:
-            saver = get_optimistic_saver(ckpt_path)
-        saver.restore(sess, ckpt_path)
+        (get_optimistic_saver(ckpt_path) if relax else _saver)\
+            .restore(sess, ckpt_path)
 
         if restore_trigger_names is None:
             restore_trigger_names = ['convergence_trigger', 'annealing_trigger']
