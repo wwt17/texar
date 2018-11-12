@@ -1,4 +1,4 @@
-max_epochs = 1000
+max_epochs = 0
 steps_per_eval = 500
 tau = 1.
 infer_beam_width = 1

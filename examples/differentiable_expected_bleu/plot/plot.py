@@ -7,18 +7,26 @@ from __future__ import unicode_literals
 import os
 import math
 import pickle
+import argparse
 import matplotlib
 import matplotlib.pyplot as plt
+plt.switch_backend('agg')
+#rcParams['font.family'] = 'Times New Roman'
+fontsize = 17
+font = {
+    'family': 'Times New Roman',
+    'size': fontsize,
+}
+matplotlib.rc('font', **font)
 from nltk.translate.bleu_score import sentence_bleu
 
-plt.switch_backend('agg')
 
 def mean(a):
     return sum(a) / len(a)
 
-def main():
+def main(n):
     data = None
-    for i in range(5):
+    for i in range(n):
         with open("{}.test.pkl".format(i), "rb") as pickle_file:
             _data = []
             while True:
@@ -35,31 +43,34 @@ def main():
             for x, _x in zip(item, _item):
                 x.append(_x)
 
-    for item in data:
-        for i in range(len(item)):
-            if i != 2:
-                x = item[i]
+    for i, item in enumerate(data):
+        for j in range(len(item)):
+            if j != 2:
+                x = item[j]
                 _x = x[0]
-                assert all(map(lambda e: e == _x, x))
-                item[i] = _x
+                try:
+                    assert all(map(lambda e: e == _x, x))
+                except AssertionError:
+                    print('data[{}][{}] = {}'.format(i, j, x))
+                item[j] = _x
 
     res = []
     for target_sent, bs_sent, sample_sents, debleu_loss, mle_loss in data:
         bs_bleu = sentence_bleu([target_sent], bs_sent)
         sample_bleu = mean([sentence_bleu([target_sent], sample_sent) for sample_sent in sample_sents])
-        debleu, mle = map(lambda x: math.exp(-x), debleu_loss, mle_loss)
+        debleu, mle = map(lambda x: math.exp(-x), (debleu_loss, mle_loss / max(1, len(target_sent))))
         _res = bs_bleu, sample_bleu, debleu, mle
         res.append(_res)
         #print("{}\n{}\n{}".format(' '.join(target_sent), ' '.join(bs_sent), ' '.join(sample_sents[0])))
         #print("{}\t{}\t{}".format(*_res))
 
-    labels = ['beam search BLEU', 'sample mean BLEU', 'DEBLEU', 'MLE']
+    labels = ['beam search BLEU', 'sample mean BLEU', 'DEBLEU', 'likelihood']
     colors = ['saddlebrown', 'mediumblue', 'darkgreen', 'crimson']
 
     vals = list(zip(*res))
 
     fig = plt.figure()
-    fig.set_size_inches(10, 15)
+    fig.set_size_inches(12, 36)
 
     tot = (lambda x: x * (x-1) / 2)(len(labels))
     cnt = 0
@@ -67,11 +78,13 @@ def main():
         for j in range(i+1, len(labels)):
             cnt += 1
             ax = fig.add_subplot(tot, 2, cnt)
-            ax.set_xlabel(labels[i])
-            ax.set_ylabel(labels[j])
+            ax.set_title('', fontsize=fontsize)
+            ax.set_xlabel(labels[i], fontsize=fontsize)
+            ax.set_ylabel(labels[j], fontsize=fontsize)
             ax.scatter(vals[i], vals[j], s=1./3)
             cnt += 1
             ax = fig.add_subplot(tot, 2, cnt)
+            ax.set_title('', fontsize=fontsize)
             points = list(zip(vals[i], vals[j]))
             points.sort()
             X = list(range(len(vals[i])))
@@ -82,9 +95,12 @@ def main():
             plt.legend(loc='upper left')
 
     plt.savefig("figure.pdf")
-    plt.savefig("figure.jpg")
+    plt.savefig("figure.png")
     plt.close()
 
 
 if __name__ == '__main__':
-    main()
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('-n', type=int)
+    args = argparser.parse_args()
+    main(**vars(args))
