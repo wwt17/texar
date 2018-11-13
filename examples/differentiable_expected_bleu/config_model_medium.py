@@ -2,23 +2,34 @@
 # Hyperparameters not specified here will take the default values.
 
 num_units = 256
-beam_width = 10
+embedding_dim = 256
+dropout = 0.2
 
 embedder = {
-    'dim': num_units
+    'dim': embedding_dim
 }
+
 encoder = {
     'rnn_cell_fw': {
         'kwargs': {
             'num_units': num_units
+        },
+        'dropout': {
+            'input_keep_prob': 1. - dropout
         }
     }
 }
+
+connector = None
+
 decoder = {
     'rnn_cell': {
         'kwargs': {
             'num_units': num_units
         },
+        'dropout': {
+            'input_keep_prob': 1. - dropout
+        }
     },
     'attention': {
         'kwargs': {
@@ -26,12 +37,4 @@ decoder = {
         },
         'attention_layer_size': num_units
     }
-}
-opt = {
-    'optimizer': {
-        'type':  'AdamOptimizer',
-        'kwargs': {
-            'learning_rate': 0.001,
-        },
-    },
 }

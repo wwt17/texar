@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Attentional Seq2seq.
+"""DEBLEU.
 """
 from __future__ import absolute_import
 from __future__ import print_function
@@ -29,34 +29,35 @@ from nltk.translate.bleu_score import corpus_bleu
 
 flags = tf.flags
 
-flags.DEFINE_string("config_train", "config_train",
-                    "The training config.")
-flags.DEFINE_string("config_model", "config_model", "The model config.")
+flags.DEFINE_string("config_model", "config_model_medium", "The model config.")
 flags.DEFINE_string("config_data", "config_data_iwslt14_de-en",
                     "The dataset config.")
+flags.DEFINE_string("config_train", "config_train", "The training config.")
 flags.DEFINE_string("expr_name", "iwslt14_de-en", "The experiment name. "
-                    "Also used as the directory name of run.")
-flags.DEFINE_integer("pretrain_epochs", 10000, "Number of pretraining epochs.")
-flags.DEFINE_string("stage", "xe0", "stage.")
-flags.DEFINE_boolean("reinitialize_optimizer", False, "Whether to reinitialize "
-                     "optimizer state before training.")
+                    "Used as the directory name of run.")
+flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
+                    "restore from. If not specified, the latest checkpoint in "
+                    "expr_name is restored.")
+flags.DEFINE_boolean("reinitialize", True, "Whether to reinitialize the state "
+                     "of the optimizers before training and after annealing.")
 
 FLAGS = flags.FLAGS
 
-config_train = importlib.import_module(FLAGS.config_train)
 config_model = importlib.import_module(FLAGS.config_model)
 config_data = importlib.import_module(FLAGS.config_data)
+config_train = importlib.import_module(FLAGS.config_train)
 expr_name = FLAGS.expr_name
-pretrain_epochs = FLAGS.pretrain_epochs
-stage = FLAGS.stage
-reinitialize_optimizer = FLAGS.reinitialize_optimizer
-mask_patterns = config_train.mask_patterns
+restore_from = FLAGS.restore_from
+reinitialize = FLAGS.reinitialize
+phases = config_train.phases
 
-d = config_train.train_xe["optimizer"]["kwargs"]
-if stage.startswith("xe"):
-    d["learning_rate"] = d["learning_rate"][int(stage[2:])]
-else:
-    d["learning_rate"] = d["learning_rate"][-1]
+xe_names = ('xe_0', 'xe_1')
+debleu_names = ('debleu_0', 'debleu_1')
+
+dir_model = os.path.join(expr_name, 'ckpt')
+dir_best = os.path.join(expr_name, 'ckpt-best')
+ckpt_model = os.path.join(dir_model, 'model.ckpt')
+ckpt_best = os.path.join(dir_best, 'model.ckpt')
 
 
 def get_scope_by_name(tensor):
@@ -66,13 +67,16 @@ def get_scope_by_name(tensor):
 def build_model(batch, train_data):
     """Assembles the seq2seq model.
     """
+    train_ops = {}
+
     source_embedder = tx.modules.WordEmbedder(
         vocab_size=train_data.source_vocab.size, hparams=config_model.embedder)
 
     encoder = tx.modules.BidirectionalRNNEncoder(
         hparams=config_model.encoder)
 
-    enc_outputs, _ = encoder(source_embedder(batch['source_text_ids']))
+    enc_outputs, enc_final_state = encoder(
+        source_embedder(batch['source_text_ids']))
 
     target_embedder = tx.modules.WordEmbedder(
         vocab_size=train_data.target_vocab.size, hparams=config_model.embedder)
@@ -83,9 +87,27 @@ def build_model(batch, train_data):
         vocab_size=train_data.target_vocab.size,
         hparams=config_model.decoder)
 
+    if config_model.connector is None:
+        dec_initial_state = None
+
+    else:
+        enc_final_state = tf.contrib.framework.nest.map_structure(
+            lambda *args: tf.concat(args, -1), *enc_final_state)
+
+        if isinstance(decoder.cell, tf.nn.rnn_cell.LSTMCell):
+            connector = tx.modules.MLPTransformConnector(
+                decoder.state_size.h, hparams=config_model.connector)
+            dec_initial_h = connector(enc_final_state.h)
+            dec_initial_state = (dec_initial_h, enc_final_state.c)
+        else:
+            connector = tx.modules.MLPTransformConnector(
+                decoder.state_size, hparams=config_model.connector)
+            dec_initial_state = connector(enc_final_state)
+
     # cross-entropy + teacher-forcing pretraining
     tf_outputs, _, _ = decoder(
         decoding_strategy='train_greedy',
+        initial_state=dec_initial_state,
         inputs=target_embedder(batch['target_text_ids'][:, :-1]),
         sequence_length=batch['target_length']-1)
 
@@ -94,31 +116,40 @@ def build_model(batch, train_data):
         logits=tf_outputs.logits,
         sequence_length=batch['target_length']-1)
 
-    train_xe_op = tx.core.get_train_op(
+    train_ops[xe_names[0]] = tx.core.get_train_op(
         loss_xe,
-        hparams=config_train.train_xe)
+        hparams=config_train.train_xe_0)
+    train_ops[xe_names[1]] = tx.core.get_train_op(
+        loss_xe,
+        hparams=config_train.train_xe_1)
 
     # teacher mask + DEBLEU fine-tuning
+    n_unmask = tf.placeholder(tf.int32, shape=[], name="n_unmask")
+    n_mask = tf.placeholder(tf.int32, shape=[], name="n_mask")
     tm_helper = tx.modules.TeacherMaskSoftmaxEmbeddingHelper(
         # must not remove last token, since it may be used as mask
         inputs=batch['target_text_ids'],
         sequence_length=batch['target_length']-1,
         embedding=target_embedder,
-        n_unmask=mask_patterns[0][0],
-        n_mask=mask_patterns[0][1],
+        n_unmask=n_unmask,
+        n_mask=n_mask,
         tau=config_train.tau)
 
     tm_outputs, _, _ = decoder(
-        helper=tm_helper)
+        helper=tm_helper,
+        initial_state=dec_initial_state)
 
     loss_debleu = tx.losses.debleu(
         labels=batch['target_text_ids'][:, 1:],
         probs=tm_outputs.sample_id,
         sequence_length=batch['target_length']-1)
 
-    train_debleu_op = tx.core.get_train_op(
+    train_ops[debleu_names[0]] = tx.core.get_train_op(
         loss_debleu,
-        hparams=config_train.train_debleu)
+        hparams=config_train.train_debleu_0)
+    train_ops[debleu_names[1]] = tx.core.get_train_op(
+        loss_debleu,
+        hparams=config_train.train_debleu_1)
 
     # start and end tokens
     start_tokens = tf.ones_like(batch['target_length']) * \
@@ -150,62 +181,113 @@ def build_model(batch, train_data):
         embedding=target_embedder,
         start_tokens=start_tokens,
         end_token=end_token,
+        initial_state=dec_initial_state,
         beam_width=config_train.infer_beam_width,
         max_decoding_length=config_train.infer_max_decoding_length)
 
-    return train_xe_op, train_debleu_op, tm_helper, bs_outputs
+    return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs
 
 
 def main():
     """Entrypoint.
     """
-    train_data = tx.data.PairedTextData(hparams=config_data.train)
+    train_0_data = tx.data.PairedTextData(hparams=config_data.train_0)
+    train_1_data = tx.data.PairedTextData(hparams=config_data.train_1)
     val_data = tx.data.PairedTextData(hparams=config_data.val)
     test_data = tx.data.PairedTextData(hparams=config_data.test)
     data_iterator = tx.data.FeedableDataIterator(
-        {'train': train_data, 'val': val_data, 'test': test_data})
-
+        {'train_0': train_0_data, 'train_1': train_1_data,
+         'val': val_data, 'test': test_data})
     data_batch = data_iterator.get_next()
 
     global_step = tf.train.create_global_step()
 
-    train_xe_op, train_debleu_op, tm_helper, infer_outputs = \
-        build_model(data_batch, train_data)
+    train_ops, tm_helper, mask_pattern_, infer_outputs = build_model(
+        data_batch, train_0_data)
 
-    train_xe_op_initializer, train_debleu_op_initializer = [
-        tf.variables_initializer(
+    def get_train_op_scope(name):
+        return get_scope_by_name(train_ops[name])
+
+    train_op_initializers = {
+        name: tf.variables_initializer(
             tf.get_collection(
                 tf.GraphKeys.GLOBAL_VARIABLES,
-                scope=get_scope_by_name(train_op)),
-            name=name)
-        for train_op, name in [
-            (train_xe_op, "train_xe_op_initializer"),
-            (train_debleu_op, "train_debleu_op_initializer")]]
+                scope=get_train_op_scope(name)),
+            name='train_{}_op_initializer'.format(name))
+        for name in (xe_names + debleu_names)}
 
     summary_tm = [
         tf.summary.scalar('tm/n_unmask', tm_helper.n_unmask),
         tf.summary.scalar('tm/n_mask', tm_helper.n_mask)]
-    summary_xe_op = tf.summary.merge(
-        tf.get_collection(
-            tf.GraphKeys.SUMMARIES,
-            scope=get_scope_by_name(train_xe_op)),
-        name='summary_xe')
-    summary_debleu_op = tf.summary.merge(
-        tf.get_collection(
-            tf.GraphKeys.SUMMARIES,
-            scope=get_scope_by_name(train_debleu_op)) + summary_tm,
-        name='summary_debleu')
+    summary_ops = {
+        name: tf.summary.merge(
+            tf.get_collection(
+                tf.GraphKeys.SUMMARIES,
+                scope=get_train_op_scope(name))
+            + (summary_tm if name in debleu_names else []),
+            name='summary_{}'.format(name))
+        for name in (xe_names + debleu_names)}
+
+    global convergence_trigger
+    convergence_trigger = tx.utils.BestEverConvergenceTrigger(
+        None,
+        lambda state: state,
+        config_train.threshold_steps,
+        config_train.minimum_interval_steps)
 
     saver = tf.train.Saver(max_to_keep=None)
 
-    def _train_epoch(sess, summary_writer, train_op, summary_op, trigger):
+    def _save_to(directory, step):
+        print('saving to {} ...'.format(directory))
+        saved_path = saver.save(sess, directory, global_step=step)
+
+        for trigger_name in ['convergence_trigger', 'annealing_trigger']:
+            trigger = globals()[trigger_name]
+            trigger_path = '{}.{}'.format(saved_path, trigger_name)
+            print('saving {} ...'.format(trigger_name))
+            with open(trigger_path, 'wb') as pickle_file:
+                trigger.save_to_pickle(pickle_file)
+
+        print('saved to {}'.format(saved_path))
+
+    def _restore_from_path(ckpt_path, restore_trigger_names=None):
+        print('restoring from {} ...'.format(ckpt_path))
+        saver.restore(sess, ckpt_path)
+
+        if restore_trigger_names is None:
+            restore_trigger_names = ['convergence_trigger', 'annealing_trigger']
+
+        for trigger_name in restore_trigger_names:
+            trigger = globals()[trigger_name]
+            trigger_path = '{}.{}'.format(ckpt_path, trigger_name)
+            if os.path.exists(trigger_path):
+                print('restoring {} ...'.format(trigger_name))
+                with open(trigger_path, 'rb') as pickle_file:
+                    trigger.restore_from_pickle(pickle_file)
+            else:
+                print('cannot find previous {} state.'.format(trigger_name))
+
+        print('done.')
+
+    def _restore_from(directory, restore_trigger_names=None):
+        if os.path.exists(directory):
+            ckpt_path = tf.train.latest_checkpoint(directory)
+            _restore_from_path(ckpt_path, restore_trigger_names)
+
+        else:
+            print('cannot find checkpoint directory {}'.format(directory))
+
+    def _train_epoch(sess, summary_writer, mode, train_op, summary_op):
         print('in _train_epoch')
 
-        data_iterator.restart_dataset(sess, 'train')
+        data_iterator.restart_dataset(sess, mode)
         feed_dict = {
             tx.global_mode(): tf.estimator.ModeKeys.TRAIN,
-            data_iterator.handle: data_iterator.get_handle(sess, 'train')
+            data_iterator.handle: data_iterator.get_handle(sess, mode),
         }
+        if mask_pattern is not None:
+            feed_dict.update(
+                {mask_pattern_[_]: mask_pattern[_] for _ in range(2)})
 
         while True:
             try:
@@ -215,14 +297,17 @@ def main():
                 summary_writer.add_summary(summary, step)
 
                 if step % config_train.steps_per_eval == 0:
-                    _eval_epoch(sess, summary_writer, 'val', trigger)
+                    global triggered
+                    _eval_epoch(sess, summary_writer, 'val')
+                    if triggered:
+                        break
 
             except tf.errors.OutOfRangeError:
                 break
 
         print('end _train_epoch')
 
-    def _eval_epoch(sess, summary_writer, mode, trigger):
+    def _eval_epoch(sess, summary_writer, mode):
         print('in _eval_epoch with mode {}'.format(mode))
 
         data_iterator.restart_dataset(sess, mode)
@@ -263,99 +348,84 @@ def main():
         summary_writer.add_summary(summary, step)
         summary_writer.flush()
 
-        if trigger is not None:
-            triggered, _ = trigger(step, bleu)
+        if mode == 'val':
+            global triggered
+            triggered = convergence_trigger(step, bleu)
             if triggered:
                 print('triggered!')
+
+            if convergence_trigger.best_ever_step == step:
+                print('updated best val bleu: {}'.format(
+                    convergence_trigger.best_ever_score))
+
+                _save_to(ckpt_best, step)
 
         print('end _eval_epoch')
         return bleu
 
-    best_val_bleu = -1
     with tf.Session() as sess:
-        def action_of_mask(mask_pattern):
-            sess.run(train_debleu_op_initializer)
-            tm_helper.assign_mask_pattern(sess, *mask_pattern)
-
-        action = (action_of_mask(mask_pattern)
-                  for mask_pattern in mask_patterns[1:])
-        trigger = tx.utils.BestEverConvergenceTrigger(
-            action,
-            config_train.threshold_steps,
-            config_train.minimum_interval_steps,
-            default=None)
-
         sess.run(tf.global_variables_initializer())
         sess.run(tf.local_variables_initializer())
         sess.run(tf.tables_initializer())
 
-        dir_model = os.path.join(expr_name, 'ckpt')
-        dir_best = os.path.join(expr_name, 'ckpt-best')
-        ckpt_model = os.path.join(dir_model, 'model.ckpt')
-        ckpt_best = os.path.join(dir_best, 'model.ckpt')
+        def action(i):
+            if i >= len(phases) - 1:
+                return i
+            i += 1
+            train_data_name, train_op_name, mask_pattern = phases[i]
+            if reinitialize:
+                sess.run(train_op_initializers[train_op_name])
+            return i
 
-        if os.path.exists(dir_model):
-            ckpt_path = tf.train.latest_checkpoint(dir_model)
-            print('restoring from {} ...'.format(ckpt_path))
-            saver.restore(sess, ckpt_path)
+        global annealing_trigger
+        annealing_trigger = tx.utils.Trigger(0, action)
 
-            if reinitialize_optimizer:
-                sess.run(train_xe_op_initializer)
-                sess.run(train_debleu_op_initializer)
+        def _restore_and_anneal():
+            _restore_from(dir_best, ['convergence_trigger'])
+            annealing_trigger.trigger()
 
-            trigger_path = '{}.trigger'.format(ckpt_path)
-            if os.path.exists(trigger_path):
-                with open(trigger_path, 'rb') as pickle_file:
-                    trigger.restore_from_pickle(pickle_file)
-            else:
-                print('cannot find previous trigger state.')
-
-            print('done.')
+        if restore_from:
+            _restore_from_path(restore_from)
+        else:
+            _restore_from(dir_model)
 
         summary_writer = tf.summary.FileWriter(
             os.path.join(expr_name, 'log'), sess.graph, flush_secs=30)
 
         epoch = 0
         while epoch < config_train.max_epochs:
-            print('epoch #{}{}:'.format(
-                epoch, ' ({})'.format(stage)))
+            train_data_name, train_op_name, mask_pattern = phases[
+                annealing_trigger.user_state]
+            train_op = train_ops[train_op_name]
+            summary_op = summary_ops[train_op_name]
 
-            val_bleu = _eval_epoch(sess, summary_writer, 'val', trigger)
-            test_bleu = _eval_epoch(sess, summary_writer, 'test', None)
+            print('epoch #{} {}:'.format(
+                epoch, (train_data_name, train_op_name, mask_pattern)))
+
+            val_bleu = _eval_epoch(sess, summary_writer, 'val')
+            test_bleu = _eval_epoch(sess, summary_writer, 'test')
+            if triggered:
+                _restore_and_anneal()
+                continue
+
             step = tf.train.global_step(sess, global_step)
-            print('epoch: {}, step: {}, val bleu: {}, test bleu: {}'.format(
+
+            print('epoch: {}, step: {}, val BLEU: {}, test BLEU: {}'.format(
                 epoch, step, val_bleu, test_bleu))
 
-            if val_bleu > best_val_bleu:
-                best_val_bleu = val_bleu
-                print('update best val bleu: {}'.format(best_val_bleu))
+            _train_epoch(sess, summary_writer, train_data_name,
+                         train_op, summary_op)
+            if triggered:
+                _restore_and_anneal()
+                continue
 
-                saved_path = saver.save(
-                    sess, ckpt_best, global_step=step)
-
-                if stage == 'debleu':
-                    with open('{}.trigger'.format(saved_path), 'wb') as \
-                            pickle_file:
-                        trigger.save_to_pickle(pickle_file)
-
-                print('saved to {}'.format(saved_path))
-
-            train_op, summary_op, trigger_ = {
-                'xe0': (train_xe_op, summary_xe_op, None),
-                'xe1': (train_xe_op, summary_xe_op, None),
-                'debleu': (train_debleu_op, summary_debleu_op, trigger)
-            }[stage]
-            _train_epoch(sess, summary_writer, train_op, summary_op, trigger_)
             epoch += 1
 
             step = tf.train.global_step(sess, global_step)
-            saved_path = saver.save(sess, ckpt_model, global_step=step)
+            _save_to(ckpt_model, step)
 
-            if stage == 'debleu':
-                with open('{}.trigger'.format(saved_path), 'wb') as pickle_file:
-                    trigger.save_to_pickle(pickle_file)
-
-            print('saved to {}'.format(saved_path))
+        test_bleu = _eval_epoch(sess, summary_writer, 'test')
+        print('epoch: {}, test BLEU: {}'.format(epoch, test_bleu))
 
 
 if __name__ == '__main__':
