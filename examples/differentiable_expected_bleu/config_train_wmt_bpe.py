@@ -10,7 +10,7 @@ minimum_interval_steps = 20000
 phases = [
     # (config_data, config_train, mask_pattern)
     ("train_0", "xe_0", None),
-    ("train_0", "xe_1", None),
+    #("train_0", "xe_1", None),
     ("train_0", "debleu_0", (2, 2)),
     ("train_0", "debleu_0", (4, 2)),
     ("train_0", "debleu_1", (1, 0)),
