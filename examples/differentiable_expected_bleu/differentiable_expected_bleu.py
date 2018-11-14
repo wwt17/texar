@@ -224,21 +224,36 @@ def build_model(batch, train_data):
     def untile(a):
         return tf.reshape(a, tf.concat([[n_samples, -1], tf.shape(a)[1:]], -1))
 
-    tiled_initial_state = tf.contrib.framework.nest.map_structure(
-        tile, dec_initial_state) if dec_initial_state is not None else None
-
     _sample_outputs, _sample_length = [], []
     for i_sample in range(n_samples):
-        sample_outputs, _, sample_length = tiled_decoder(
+        sample_outputs, _, sample_length = decoder(
             decoding_strategy='infer_sample',
             embedding=target_embedder,
-            start_tokens=tile(start_tokens),
+            start_tokens=start_tokens,
             end_token=end_token,
-            initial_state=tiled_initial_state,
+            initial_state=dec_initial_state,
             max_decoding_length=config_train.sample_max_decoding_length)
         _sample_outputs.append(sample_outputs)
         _sample_length.append(sample_length)
-    sample_outputs = tf.concat(_sample_outputs, axis=0)
+
+    def concat(*tensors):
+        lengths = [tf.shape(tensor)[1] for tensor in tensors]
+        max_length = tf.reduce_max(tf.stack(lengths))
+        tensors = [
+            tf.concat([
+                tensor,
+                tf.zeros(
+                    tf.shape(tensor) + tf.one_hot(
+                        1,
+                        tf.shape(tf.shape(tensor))[0],
+                        max_length - 2 * length),
+                    dtype=tensor.dtype)],
+                axis=1)
+            for length, tensor in zip(lengths, tensors)]
+        return tf.concat(tensors, axis=0)
+
+    sample_outputs = tf.contrib.framework.nest.map_structure(
+        concat, *_sample_outputs)
     sample_length = tf.concat(_sample_length, axis=0)
 
     sample_reward = tf.py_func(
