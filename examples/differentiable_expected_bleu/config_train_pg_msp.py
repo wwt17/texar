@@ -1,15 +1,18 @@
 max_epochs = 1000
 steps_per_eval = 500
 tau = 1.
+n_samples = 10
+sample_max_decoding_length = 50
 infer_beam_width = 1
 infer_max_decoding_length = 50
-weight_rl = 0.1
+weight_pg_grd = 0.1
+weight_pg_msp = 0.25
 
 threshold_steps = 10000
 minimum_interval_steps = 10000
 phases = [
     # (config_data, config_train, mask_pattern)
-    ("train_0", "rl_xe", None),
+    ("train_0", "pg_msp", None),
 ]
 
 train_xe_0 = {
@@ -76,7 +79,7 @@ train_debleu_1 = {
     "name": "DEBLEU_1"
 }
 
-train_rl_xe = {
+train_pg_grd = {
     "optimizer": {
         "type": "AdamOptimizer",
         "kwargs": {
@@ -89,5 +92,21 @@ train_rl_xe = {
             "clip_norm": 5.
         }
     },
-    "name": "RL_XE"
+    "name": "PG_GRD"
+}
+
+train_pg_msp = {
+    "optimizer": {
+        "type": "AdamOptimizer",
+        "kwargs": {
+            "learning_rate": 1e-5
+        }
+    },
+    "gradient_clip": {
+        "type": "clip_by_global_norm",
+        "kwargs": {
+            "clip_norm": 5.
+        }
+    },
+    "name": "PG_MSP"
 }

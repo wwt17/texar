@@ -17,7 +17,7 @@ train_0 = {
 }
 
 train_1 = {
-    'batch_size': 160,
+    'batch_size': 20,
     'allow_smaller_final_batch': False,
     'source_dataset': {
         "files": 'data/iwslt14_de-en/train.de',

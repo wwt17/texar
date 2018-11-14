@@ -58,8 +58,8 @@ phases = config_train.phases
 
 xe_names = ('xe_0', 'xe_1')
 debleu_names = ('debleu_0', 'debleu_1')
-rl_names = ('rl_xe',)
-all_names = xe_names + debleu_names + rl_names
+pg_names = ('pg_grd', 'pg_msp')
+all_names = xe_names + debleu_names + pg_names
 
 dir_model = os.path.join(expr_name, 'ckpt')
 dir_best = os.path.join(expr_name, 'ckpt-best')
@@ -215,17 +215,38 @@ def build_model(batch, train_data):
         max_decoding_length=config_train.infer_max_decoding_length)
 
     # sampling:
-    sample_outputs, _, sample_length = decoder(
+    n_samples = config_train.n_samples
+
+    def tile(a):
+        return tf.tile(
+            a, tf.concat([[n_samples], tf.ones_like(tf.shape(a)[1:])], -1))
+
+    def untile(a):
+        return tf.reshape(a, tf.concat([[n_samples, -1], tf.shape(a)[1:]], -1))
+
+    tiled_initial_state = tf.contrib.framework.nest.map_structure(
+        tile, dec_initial_state) if dec_initial_state is not None else None
+
+    with tf.variable_scope('', reuse=True):
+        tiled_decoder = tx.modules.AttentionRNNDecoder(
+            memory=tile(tf.concat(enc_outputs, axis=2)),
+            memory_sequence_length=tile(batch['source_length']),
+            vocab_size=train_data.target_vocab.size,
+            hparams=config_model.decoder)
+
+    sample_outputs, _, sample_length = tiled_decoder(
         decoding_strategy='infer_sample',
         embedding=target_embedder,
-        start_tokens=start_tokens,
+        start_tokens=tile(start_tokens),
         end_token=end_token,
-        initial_state=dec_initial_state,
-        max_decoding_length=config_train.infer_max_decoding_length)
+        initial_state=tiled_initial_state,
+        max_decoding_length=config_train.sample_max_decoding_length)
 
     sample_reward = tf.py_func(
-        batch_bleu, [batch['target_text_ids'], sample_outputs.sample_id],
+        batch_bleu, [tile(batch['target_text_ids']), sample_outputs.sample_id],
         tf.float32, stateful=False, name='sample_reward')
+    mean_sample_reward = tf.reduce_mean(
+        untile(sample_reward), axis=0, name="sample_mean_reward")
 
     # greedy decoding:
     greedy_outputs, _, greedy_length = decoder(
@@ -240,21 +261,32 @@ def build_model(batch, train_data):
         batch_bleu, [batch['target_text_ids'], greedy_outputs.sample_id],
         tf.float32, stateful=False, name='greedy_reward')
 
-    # reinforcement learning:
-    loss_rl = tf.reduce_mean(
-        (sample_reward - greedy_reward) *
-        tx.losses.sequence_sparse_softmax_cross_entropy(
-            labels=sample_outputs.sample_id,
-            logits=sample_outputs.logits,
-            sequence_length=sample_length,
-            average_across_batch=False))
-    loss_rl_xe = loss_rl * config_train.weight_rl \
-               + loss_xe * (1. - config_train.weight_rl)
-    train_ops[rl_names[0]] = tx.core.get_train_op(
-        loss_rl_xe,
-        hparams=config_train.train_rl_xe)
+    # policy gradient
+    nll_pg = tx.losses.sequence_sparse_softmax_cross_entropy(
+        labels=sample_outputs.sample_id,
+        logits=sample_outputs.logits,
+        sequence_length=sample_length,
+        average_across_batch=False)
 
-    return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs, sample_outputs, loss_debleu
+    def get_pg_loss(baseline_reward, name):
+        loss_pg = tf.reduce_mean(
+            (sample_reward - tile(baseline_reward)) * nll_pg)
+        weight_pg = getattr(config_train, 'weight_{}'.format(name))
+        loss_pg_xe = loss_pg * weight_pg + loss_xe * (1. - weight_pg)
+        train_ops[name] = tx.core.get_train_op(
+            loss_pg_xe,
+            hparams=getattr(config_train, 'train_{}'.format(name)))
+        return loss_pg, loss_pg_xe, train_ops[name]
+
+    # policy gradient with greedy baseline
+    loss_pg_grd, loss_pg_grd_xe, _ = get_pg_loss(
+        greedy_reward, pg_names[0])
+    # policy gradient with mean sample baseline
+    loss_pg_msp, loss_pg_msp_xe, _ = get_pg_loss(
+        mean_sample_reward, pg_names[1])
+
+    return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs, \
+        sample_outputs, loss_debleu
 
 
 def main():
@@ -273,6 +305,8 @@ def main():
 
     train_ops, tm_helper, mask_pattern_, bs_outputs, sample_outputs, loss_debleu = build_model(
         data_batch, train_0_data)
+    for var in tf.global_variables():
+        print(var)
 
     def get_train_op_scope(name):
         return get_scope_by_name(train_ops[name])
