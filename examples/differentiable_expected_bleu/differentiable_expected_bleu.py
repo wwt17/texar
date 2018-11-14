@@ -227,20 +227,19 @@ def build_model(batch, train_data):
     tiled_initial_state = tf.contrib.framework.nest.map_structure(
         tile, dec_initial_state) if dec_initial_state is not None else None
 
-    with tf.variable_scope('', reuse=True):
-        tiled_decoder = tx.modules.AttentionRNNDecoder(
-            memory=tile(tf.concat(enc_outputs, axis=2)),
-            memory_sequence_length=tile(batch['source_length']),
-            vocab_size=train_data.target_vocab.size,
-            hparams=config_model.decoder)
-
-    sample_outputs, _, sample_length = tiled_decoder(
-        decoding_strategy='infer_sample',
-        embedding=target_embedder,
-        start_tokens=tile(start_tokens),
-        end_token=end_token,
-        initial_state=tiled_initial_state,
-        max_decoding_length=config_train.sample_max_decoding_length)
+    _sample_outputs, _sample_length = [], []
+    for i_sample in range(n_samples):
+        sample_outputs, _, sample_length = tiled_decoder(
+            decoding_strategy='infer_sample',
+            embedding=target_embedder,
+            start_tokens=tile(start_tokens),
+            end_token=end_token,
+            initial_state=tiled_initial_state,
+            max_decoding_length=config_train.sample_max_decoding_length)
+        _sample_outputs.append(sample_outputs)
+        _sample_length.append(sample_length)
+    sample_outputs = tf.concat(_sample_outputs, axis=0)
+    sample_length = tf.concat(_sample_length, axis=0)
 
     sample_reward = tf.py_func(
         batch_bleu, [tile(batch['target_text_ids']), sample_outputs.sample_id],
