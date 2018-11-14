@@ -12,7 +12,7 @@ threshold_steps = 10000
 minimum_interval_steps = 10000
 phases = [
     # (config_data, config_train, mask_pattern)
-    ("train_0", "pg_msp", None),
+    ("train_1", "pg_msp", None),
 ]
 
 train_xe_0 = {

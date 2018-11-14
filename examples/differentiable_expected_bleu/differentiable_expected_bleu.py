@@ -319,8 +319,6 @@ def main():
 
     train_ops, tm_helper, mask_pattern_, bs_outputs, sample_outputs, loss_debleu = build_model(
         data_batch, train_0_data)
-    for var in tf.global_variables():
-        print(var)
 
     def get_train_op_scope(name):
         return get_scope_by_name(train_ops[name])
