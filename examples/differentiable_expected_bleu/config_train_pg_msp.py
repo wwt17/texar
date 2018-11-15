@@ -1,12 +1,13 @@
 max_epochs = 1000
-steps_per_eval = 500
+steps_per_val = 500
+steps_per_test = 1917
 tau = 1.
 n_samples = 10
 sample_max_decoding_length = 50
 infer_beam_width = 1
 infer_max_decoding_length = 50
 weight_pg_grd = 0.1
-weight_pg_msp = 0.25
+weight_pg_msp = 1. # 0.95
 
 threshold_steps = 10000
 minimum_interval_steps = 10000

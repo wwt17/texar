@@ -412,11 +412,14 @@ def main():
 
                 summary_writer.add_summary(summary, step)
 
-                if step % config_train.steps_per_eval == 0:
+                if step % config_train.steps_per_val == 0:
                     global triggered
                     _eval_epoch(sess, summary_writer, 'val')
                     if triggered:
                         break
+
+                if step % config_train.step_per_test == 0:
+                    _eval_epoch(sess, summary_writer, 'test')
 
             except tf.errors.OutOfRangeError:
                 break
@@ -491,6 +494,8 @@ def main():
                     convergence_trigger.best_ever_score))
 
                 _save_to(ckpt_best, step)
+
+        _save_to(ckpt_model, step)
 
         print('end _eval_epoch')
         return bleu
