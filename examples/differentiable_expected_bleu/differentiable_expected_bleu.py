@@ -418,7 +418,7 @@ def main():
                     if triggered:
                         break
 
-                if step % config_train.step_per_test == 0:
+                if step % config_train.steps_per_test == 0:
                     _eval_epoch(sess, summary_writer, 'test')
 
             except tf.errors.OutOfRangeError:
