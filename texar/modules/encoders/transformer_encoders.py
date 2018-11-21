@@ -147,8 +147,8 @@ class TransformerEncoder(EncoderBase):
                     # pylint: disable=protected-access
                     if self._hparams.dim != \
                         multihead_attention._hparams.output_dim:
-                        raise ValueError('The output dimenstion of'
-                                         'MultiheadEncoder should be equal'
+                        raise ValueError('The output dimenstion of '
+                                         'MultiheadEncoder should be equal '
                                          'to the dim of TransformerEncoder')
                     poswise_network = FeedForwardNetwork(
                         hparams=self._hparams['poswise_feedforward'])
@@ -156,8 +156,8 @@ class TransformerEncoder(EncoderBase):
                     if self._hparams.dim != \
                         poswise_network._hparams.layers[-1]['kwargs']['units']:
                         # poswise_network._hparams.layers[-1]['units']:
-                        raise ValueError('The output dimenstion of'
-                                         'FeedForwardNetwork should be equal'
+                        raise ValueError('The output dimenstion of '
+                                         'FeedForwardNetwork should be equal '
                                          'to the dim of TransformerEncoder')
                     self.poswise_networks.append(poswise_network)
     @staticmethod
@@ -234,6 +234,8 @@ class TransformerEncoder(EncoderBase):
             'poswise_feedforward': default_transformer_poswise_net_hparams(),
             'multihead_attention': {
                 'num_units': 512,
+                'dropout_rate':0.1,
+                'output_dim': 512,
                 'num_heads': 8,
             },
             'dim': 512,
