@@ -24,8 +24,11 @@ import importlib
 import os
 import tensorflow as tf
 import texar as tx
+import numpy as np
 
 from nltk.translate.bleu_score import corpus_bleu
+
+import pickle
 
 flags = tf.flags
 
@@ -40,6 +43,7 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "expr_name is restored.")
 flags.DEFINE_boolean("reinitialize", True, "Whether to reinitialize the state "
                      "of the optimizers before training and after annealing.")
+flags.DEFINE_string("pickle_prefix", "", "pickle dump val/test result prefix.")
 
 FLAGS = flags.FLAGS
 
@@ -49,10 +53,13 @@ config_train = importlib.import_module(FLAGS.config_train)
 expr_name = FLAGS.expr_name
 restore_from = FLAGS.restore_from
 reinitialize = FLAGS.reinitialize
+pickle_prefix = FLAGS.pickle_prefix
 phases = config_train.phases
 
 xe_names = ('xe_0', 'xe_1')
 debleu_names = ('debleu_0', 'debleu_1')
+pg_names = ('pg_grd', 'pg_msp')
+all_names = xe_names + debleu_names + pg_names
 
 dir_model = os.path.join(expr_name, 'ckpt')
 dir_best = os.path.join(expr_name, 'ckpt-best')
@@ -64,9 +71,51 @@ def get_scope_by_name(tensor):
     return tensor.name[: tensor.name.rfind('/') + 1]
 
 
+def get_optimistic_restore_variables(ckpt_path, graph=tf.get_default_graph()):
+    reader = tf.train.NewCheckpointReader(ckpt_path)
+    saved_shapes = reader.get_variable_to_shape_map()
+    var_names = sorted([
+        (var.name, var.name.split(':')[0]) for var in tf.global_variables()
+        if var.name.split(':')[0] in saved_shapes])
+    restore_vars = []
+    for var_name, saved_var_name in var_names:
+        var = graph.get_tensor_by_name(var_name)
+        var_shape = var.get_shape().as_list()
+        if var_shape == saved_shapes[saved_var_name]:
+            restore_vars.append(var)
+    return restore_vars
+
+
+def get_optimistic_saver(ckpt_path, graph=tf.get_default_graph()):
+    return tf.train.Saver(
+        get_optimistic_restore_variables(ckpt_path, graph=graph))
+
+
 def build_model(batch, train_data):
     """Assembles the seq2seq model.
     """
+    def single_bleu(ref, hypo):
+        id2str = '<{}>'.format
+        vocab = train_data.target_vocab
+        bos, eos = map(id2str, (vocab.bos_token_id, vocab.eos_token_id))
+
+        ref = [id2str(u if u != vocab.unk_token_id else -1) for u in ref]
+        hypo = [id2str(u) for u in hypo]
+
+        ref = tx.utils.strip_special_tokens(
+            ' '.join(ref), strip_bos=bos, strip_eos=eos)
+        hypo = tx.utils.strip_special_tokens(
+            ' '.join(hypo), strip_eos=eos)
+
+        return 0.01 * tx.evals.sentence_bleu(references=[ref], hypothesis=hypo)
+
+
+    def batch_bleu(refs, hypos):
+        return np.array(
+            [single_bleu(ref, hypo) for ref, hypo in zip(refs, hypos)],
+            dtype=np.float32)
+
+
     train_ops = {}
 
     source_embedder = tx.modules.WordEmbedder(
@@ -165,7 +214,93 @@ def build_model(batch, train_data):
         beam_width=config_train.infer_beam_width,
         max_decoding_length=config_train.infer_max_decoding_length)
 
-    return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs
+    # sampling:
+    n_samples = config_train.n_samples
+
+    def tile(a):
+        return tf.tile(
+            a, tf.concat([[n_samples], tf.ones_like(tf.shape(a)[1:])], -1))
+
+    def untile(a):
+        return tf.reshape(a, tf.concat([[n_samples, -1], tf.shape(a)[1:]], -1))
+
+    _sample_outputs, _sample_length = [], []
+    for i_sample in range(n_samples):
+        sample_outputs, _, sample_length = decoder(
+            decoding_strategy='infer_sample',
+            embedding=target_embedder,
+            start_tokens=start_tokens,
+            end_token=end_token,
+            initial_state=dec_initial_state,
+            max_decoding_length=config_train.sample_max_decoding_length)
+        _sample_outputs.append(sample_outputs)
+        _sample_length.append(sample_length)
+
+    def concat(*tensors):
+        lengths = [tf.shape(tensor)[1] for tensor in tensors]
+        max_length = tf.reduce_max(tf.stack(lengths))
+        tensors = [
+            tf.concat([
+                tensor,
+                tf.zeros(
+                    tf.shape(tensor) + tf.one_hot(
+                        1,
+                        tf.shape(tf.shape(tensor))[0],
+                        max_length - 2 * length),
+                    dtype=tensor.dtype)],
+                axis=1)
+            for length, tensor in zip(lengths, tensors)]
+        return tf.concat(tensors, axis=0)
+
+    sample_outputs = tf.contrib.framework.nest.map_structure(
+        concat, *_sample_outputs)
+    sample_length = tf.concat(_sample_length, axis=0)
+
+    sample_reward = tf.py_func(
+        batch_bleu, [tile(batch['target_text_ids']), sample_outputs.sample_id],
+        tf.float32, stateful=False, name='sample_reward')
+    mean_sample_reward = tf.reduce_mean(
+        untile(sample_reward), axis=0, name="sample_mean_reward")
+
+    # greedy decoding:
+    greedy_outputs, _, greedy_length = decoder(
+        decoding_strategy='infer_greedy',
+        embedding=target_embedder,
+        start_tokens=start_tokens,
+        end_token=end_token,
+        initial_state=dec_initial_state,
+        max_decoding_length=config_train.infer_max_decoding_length)
+
+    greedy_reward = tf.py_func(
+        batch_bleu, [batch['target_text_ids'], greedy_outputs.sample_id],
+        tf.float32, stateful=False, name='greedy_reward')
+
+    # policy gradient
+    nll_pg = tx.losses.sequence_sparse_softmax_cross_entropy(
+        labels=sample_outputs.sample_id,
+        logits=sample_outputs.logits,
+        sequence_length=sample_length,
+        average_across_batch=False)
+
+    def get_pg_loss(baseline_reward, name):
+        loss_pg = tf.reduce_mean(
+            (sample_reward - tile(baseline_reward)) * nll_pg)
+        weight_pg = getattr(config_train, 'weight_{}'.format(name))
+        loss_pg_xe = loss_pg * weight_pg + loss_xe * (1. - weight_pg)
+        train_ops[name] = tx.core.get_train_op(
+            loss_pg_xe,
+            hparams=getattr(config_train, 'train_{}'.format(name)))
+        return loss_pg, loss_pg_xe, train_ops[name]
+
+    # policy gradient with greedy baseline
+    loss_pg_grd, loss_pg_grd_xe, _ = get_pg_loss(
+        greedy_reward, pg_names[0])
+    # policy gradient with mean sample baseline
+    loss_pg_msp, loss_pg_msp_xe, _ = get_pg_loss(
+        mean_sample_reward, pg_names[1])
+
+    return train_ops, tm_helper, (n_unmask, n_mask), bs_outputs, \
+        sample_outputs, loss_debleu
 
 
 def main():
@@ -182,7 +317,7 @@ def main():
 
     global_step = tf.train.create_global_step()
 
-    train_ops, tm_helper, mask_pattern_, infer_outputs = build_model(
+    train_ops, tm_helper, mask_pattern_, bs_outputs, sample_outputs, loss_debleu = build_model(
         data_batch, train_0_data)
 
     def get_train_op_scope(name):
@@ -194,7 +329,7 @@ def main():
                 tf.GraphKeys.GLOBAL_VARIABLES,
                 scope=get_train_op_scope(name)),
             name='train_{}_op_initializer'.format(name))
-        for name in (xe_names + debleu_names)}
+        for name in all_names}
 
     summary_tm = [
         tf.summary.scalar('tm/n_unmask', tm_helper.n_unmask),
@@ -206,7 +341,7 @@ def main():
                 scope=get_train_op_scope(name))
             + (summary_tm if name in debleu_names else []),
             name='summary_{}'.format(name))
-        for name in (xe_names + debleu_names)}
+        for name in all_names}
 
     global convergence_trigger
     convergence_trigger = tx.utils.BestEverConvergenceTrigger(
@@ -215,11 +350,11 @@ def main():
         config_train.threshold_steps,
         config_train.minimum_interval_steps)
 
-    saver = tf.train.Saver(max_to_keep=None)
+    _saver = tf.train.Saver(max_to_keep=None)
 
     def _save_to(directory, step):
         print('saving to {} ...'.format(directory))
-        saved_path = saver.save(sess, directory, global_step=step)
+        saved_path = _saver.save(sess, directory, global_step=step)
 
         for trigger_name in ['convergence_trigger', 'annealing_trigger']:
             trigger = globals()[trigger_name]
@@ -230,9 +365,10 @@ def main():
 
         print('saved to {}'.format(saved_path))
 
-    def _restore_from_path(ckpt_path, restore_trigger_names=None):
+    def _restore_from_path(ckpt_path, restore_trigger_names=None, relax=False):
         print('restoring from {} ...'.format(ckpt_path))
-        saver.restore(sess, ckpt_path)
+        (get_optimistic_saver(ckpt_path) if relax else _saver)\
+            .restore(sess, ckpt_path)
 
         if restore_trigger_names is None:
             restore_trigger_names = ['convergence_trigger', 'annealing_trigger']
@@ -249,10 +385,10 @@ def main():
 
         print('done.')
 
-    def _restore_from(directory, restore_trigger_names=None):
+    def _restore_from(directory, restore_trigger_names=None, relax=False):
         if os.path.exists(directory):
             ckpt_path = tf.train.latest_checkpoint(directory)
-            _restore_from_path(ckpt_path, restore_trigger_names)
+            _restore_from_path(ckpt_path, restore_trigger_names, relax)
 
         else:
             print('cannot find checkpoint directory {}'.format(directory))
@@ -276,11 +412,14 @@ def main():
 
                 summary_writer.add_summary(summary, step)
 
-                if step % config_train.steps_per_eval == 0:
+                if step % config_train.steps_per_val == 0:
                     global triggered
                     _eval_epoch(sess, summary_writer, 'val')
                     if triggered:
                         break
+
+                if step % config_train.steps_per_test == 0:
+                    _eval_epoch(sess, summary_writer, 'test')
 
             except tf.errors.OutOfRangeError:
                 break
@@ -293,29 +432,45 @@ def main():
         data_iterator.restart_dataset(sess, mode)
         feed_dict = {
             tx.global_mode(): tf.estimator.ModeKeys.EVAL,
-            data_iterator.handle: data_iterator.get_handle(sess, mode)
+            data_iterator.handle: data_iterator.get_handle(sess, mode),
+            mask_pattern_[0]: 1,
+            mask_pattern_[1]: 0,
         }
 
         ref_hypo_pairs = []
         fetches = [
             data_batch['target_text'][:, 1:],
-            infer_outputs.predicted_ids[:, :, 0]
+            bs_outputs.predicted_ids[:, :, 0],
+            sample_outputs.sample_id,
+            loss_debleu,
         ]
 
-        while True:
-            try:
-                target_texts_ori, output_ids = sess.run(fetches, feed_dict)
-                target_texts = tx.utils.strip_special_tokens(
-                    target_texts_ori.tolist(), is_token_list=True)
-                output_texts = tx.utils.map_ids_to_strs(
-                    ids=output_ids.tolist(), vocab=val_data.target_vocab,
-                    join=False)
+        with open('{}{}.pkl'.format(pickle_prefix, mode), 'wb') as pickle_file:
+            cnt = 0
+            while True:
+                try:
+                    target_texts_ori, bs_output_ids, sample_output_ids, _loss_debleu = \
+                        sess.run(fetches, feed_dict)
+                    target_texts = tx.utils.strip_special_tokens(
+                        target_texts_ori.tolist(), is_token_list=True)
+                    bs_output_texts = tx.utils.map_ids_to_strs(
+                        ids=bs_output_ids.tolist(), vocab=val_data.target_vocab,
+                        join=False)
+                    sample_output_texts = tx.utils.map_ids_to_strs(
+                        ids=sample_output_ids.tolist(), vocab=val_data.target_vocab,
+                        join=False)
 
-                ref_hypo_pairs.extend(
-                    zip(map(lambda x: [x], target_texts), output_texts))
+                    pickle.dump(
+                        (target_texts, bs_output_texts, sample_output_texts, _loss_debleu),
+                        pickle_file)
 
-            except tf.errors.OutOfRangeError:
-                break
+                    ref_hypo_pairs.extend(
+                        zip(map(lambda x: [x], target_texts), bs_output_texts))
+                    cnt += 1
+                    print(cnt)
+
+                except tf.errors.OutOfRangeError:
+                    break
 
         refs, hypos = zip(*ref_hypo_pairs)
         bleu = corpus_bleu(refs, hypos) * 100
@@ -339,6 +494,8 @@ def main():
                     convergence_trigger.best_ever_score))
 
                 _save_to(ckpt_best, step)
+
+        _save_to(ckpt_model, step)
 
         print('end _eval_epoch')
         return bleu
@@ -365,9 +522,9 @@ def main():
             annealing_trigger.trigger()
 
         if restore_from:
-            _restore_from_path(restore_from)
+            _restore_from_path(restore_from, relax=True)
         else:
-            _restore_from(dir_model)
+            _restore_from(dir_model, relax=True)
 
         summary_writer = tf.summary.FileWriter(
             os.path.join(expr_name, 'log'), sess.graph, flush_secs=30)

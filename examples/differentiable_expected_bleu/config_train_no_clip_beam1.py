@@ -9,7 +9,7 @@ infer_max_decoding_length = 50
 weight_pg_grd = 1.
 weight_pg_msp = 1.
 
-threshold_steps = 10000
+threshold_steps = 25000
 minimum_interval_steps = 10000
 phases = [
     # (config_data, config_train, mask_pattern)
@@ -25,12 +25,6 @@ train_xe_0 = {
         "type": "AdamOptimizer",
         "kwargs": {
             "learning_rate": 1e-3
-        }
-    },
-    "gradient_clip": {
-        "type": "clip_by_global_norm",
-        "kwargs": {
-            "clip_norm": 5.
         }
     },
     "name": "XE_0"

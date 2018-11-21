@@ -1,30 +1,25 @@
-max_epochs = 1000
-steps_per_val = 500
-steps_per_test = int(1e9)
+max_epochs = 0
+steps_per_eval = 1000
 tau = 1.
-n_samples = 10
-sample_max_decoding_length = 50
-infer_beam_width = 1
+infer_beam_width = 10
 infer_max_decoding_length = 50
-weight_pg_grd = 1.
-weight_pg_msp = 1.
 
-threshold_steps = 10000
-minimum_interval_steps = 10000
+threshold_steps = 20000
+minimum_interval_steps = 20000
 phases = [
     # (config_data, config_train, mask_pattern)
     ("train_0", "xe_0", None),
     ("train_0", "xe_1", None),
     ("train_0", "debleu_0", (2, 2)),
-    ("train_1", "debleu_0", (4, 2)),
-    ("train_1", "debleu_1", (1, 0)),
+    ("train_0", "debleu_0", (4, 2)),
+    ("train_0", "debleu_1", (1, 0)),
 ]
 
 train_xe_0 = {
     "optimizer": {
         "type": "AdamOptimizer",
         "kwargs": {
-            "learning_rate": 1e-3
+            "learning_rate": 1e-4
         }
     },
     "gradient_clip": {
@@ -82,36 +77,4 @@ train_debleu_1 = {
         }
     },
     "name": "DEBLEU_1"
-}
-
-train_pg_grd = {
-    "optimizer": {
-        "type": "AdamOptimizer",
-        "kwargs": {
-            "learning_rate": 1e-5
-        }
-    },
-    "gradient_clip": {
-        "type": "clip_by_global_norm",
-        "kwargs": {
-            "clip_norm": 5.
-        }
-    },
-    "name": "PG_GRD"
-}
-
-train_pg_msp = {
-    "optimizer": {
-        "type": "AdamOptimizer",
-        "kwargs": {
-            "learning_rate": 1e-5
-        }
-    },
-    "gradient_clip": {
-        "type": "clip_by_global_norm",
-        "kwargs": {
-            "clip_norm": 5.
-        }
-    },
-    "name": "PG_MSP"
 }

@@ -4,12 +4,12 @@ steps_per_test = int(1e9)
 tau = 1.
 n_samples = 10
 sample_max_decoding_length = 50
-infer_beam_width = 1
+infer_beam_width = 5
 infer_max_decoding_length = 50
 weight_pg_grd = 1.
 weight_pg_msp = 1.
 
-threshold_steps = 10000
+threshold_steps = 25000
 minimum_interval_steps = 10000
 phases = [
     # (config_data, config_train, mask_pattern)
@@ -25,12 +25,6 @@ train_xe_0 = {
         "type": "AdamOptimizer",
         "kwargs": {
             "learning_rate": 1e-3
-        }
-    },
-    "gradient_clip": {
-        "type": "clip_by_global_norm",
-        "kwargs": {
-            "clip_norm": 5.
         }
     },
     "name": "XE_0"

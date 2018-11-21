@@ -1,6 +1,6 @@
 max_epochs = 1000
 steps_per_val = 500
-steps_per_test = int(1e9)
+steps_per_test = 1917
 tau = 1.
 n_samples = 10
 sample_max_decoding_length = 50
@@ -9,15 +9,11 @@ infer_max_decoding_length = 50
 weight_pg_grd = 1.
 weight_pg_msp = 1.
 
-threshold_steps = 10000
+threshold_steps = 25000
 minimum_interval_steps = 10000
 phases = [
     # (config_data, config_train, mask_pattern)
-    ("train_0", "xe_0", None),
-    ("train_0", "xe_1", None),
-    ("train_0", "debleu_0", (2, 2)),
-    ("train_1", "debleu_0", (4, 2)),
-    ("train_1", "debleu_1", (1, 0)),
+    ("train_1", "pg_msp", None),
 ]
 
 train_xe_0 = {

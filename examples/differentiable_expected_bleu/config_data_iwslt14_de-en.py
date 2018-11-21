@@ -2,7 +2,7 @@ source_vocab_file = 'data/iwslt14_de-en/vocab.de'
 target_vocab_file = 'data/iwslt14_de-en/vocab.en'
 
 train_0 = {
-    'batch_size': 80,
+    'batch_size': 64,
     'allow_smaller_final_batch': False,
     'source_dataset': {
         "files": 'data/iwslt14_de-en/train.de',
@@ -17,7 +17,7 @@ train_0 = {
 }
 
 train_1 = {
-    'batch_size': 160,
+    'batch_size': 20,
     'allow_smaller_final_batch': False,
     'source_dataset': {
         "files": 'data/iwslt14_de-en/train.de',
@@ -33,7 +33,7 @@ train_1 = {
 
 
 val = {
-    'batch_size': 80,
+    'batch_size': 64,
     'shuffle': False,
     'source_dataset': {
         "files": 'data/iwslt14_de-en/valid.de',
@@ -46,7 +46,7 @@ val = {
 }
 
 test = {
-    'batch_size': 80,
+    'batch_size': 64,
     'shuffle': False,
     'source_dataset': {
         "files": 'data/iwslt14_de-en/test.de',
