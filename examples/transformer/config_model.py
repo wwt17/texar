@@ -22,6 +22,12 @@ emb = {
 
 encoder = {
     'dim': hidden_dim,
+    'multihead_attention': {
+        'num_units': hidden_dim,
+        'dropout_rate': 0.1,
+        'output_dim': hidden_dim,
+        'num_heads': 8,
+    },
     'initializer': {
         'type': 'variance_scaling_initializer',
         'kwargs': {
