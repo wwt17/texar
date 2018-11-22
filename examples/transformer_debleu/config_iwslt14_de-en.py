@@ -1,4 +1,4 @@
-batch_size = 64
+batch_size = 1024
 test_batch_size = 64
 
 max_train_epoch = 1000
