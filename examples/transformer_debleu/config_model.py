@@ -34,8 +34,8 @@ emb = {
 encoder = {
     'num_blocks': n_layers,
     'dim': d_model,
-    'embedding_dropout': 1 - dropout,
-    'residual_dropout': 1 - dropout,
+    'embedding_dropout': dropout,
+    'residual_dropout': dropout,
     'poswise_feedforward': {
         "layers": [
             {
