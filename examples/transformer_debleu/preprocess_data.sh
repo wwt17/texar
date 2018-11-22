@@ -29,7 +29,7 @@
 
 TF=$(pwd)
 
-PYTHON=python3
+PYTHON=python
 
 export PATH=$PATH:$TF/../../bin/utils/
 encoder=$1

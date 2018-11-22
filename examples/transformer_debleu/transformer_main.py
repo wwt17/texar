@@ -80,6 +80,7 @@ def main():
     is_target = tf.to_float(tf.not_equal(labels, 0))
 
     global_step = tf.Variable(0, dtype=tf.int64, trainable=False)
+    learning_rate = tf.placeholder(tf.float64, shape=(), name='lr')
 
     embedder = tx.modules.WordEmbedder(
         vocab_size=vocab_size, hparams=config_model.emb)
@@ -112,9 +113,11 @@ def main():
 
     train_op = tx.core.get_train_op(
         mle_loss,
+        learning_rate=learning_rate,
         global_step=global_step,
         hparams=config_model.opt)
 
+    tf.summary.scalar('lr', learning_rate)
     tf.summary.scalar('mle_loss', mle_loss)
     summary_merged = tf.summary.merge_all()
 
@@ -223,6 +226,7 @@ def main():
                 encoder_input: in_arrays[0],
                 decoder_input: in_arrays[1],
                 labels: in_arrays[2],
+                learning_rate: utils.get_lr(step, config_model.lr)
             }
             fetches = {
                 'step': global_step,
