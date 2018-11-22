@@ -3,7 +3,7 @@
 import copy
 import texar as tx
 
-random_seed = 0
+random_seed = 1
 beam_width = 1
 alpha = 0.6
 n_layers = 8
