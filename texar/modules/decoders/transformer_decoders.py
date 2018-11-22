@@ -200,9 +200,9 @@ class TransformerDecoder(ModuleBase):
             Make sure the `output_dim` in this module is equal to `dim`.
 
             See :func:
-                `~texar.modules.encoder.MultiheadAttentionEncoder.
-                default_harams` for details.
-            `
+            `~texar.modules.encoder.MultiheadAttentionEncoder.default_harams`
+            for details.
+
         "initializer" : dict, optional
             Hyperparameters of the default initializer that initializes
             variables created in this module.
