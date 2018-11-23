@@ -24,7 +24,7 @@ import importlib
 import os
 import pickle
 import random
-from torchtext import data
+import torchtext.data
 import tensorflow as tf
 import texar as tx
 from texar.utils import transformer_utils
@@ -59,6 +59,7 @@ expr_name = FLAGS.expr_name
 restore_from = FLAGS.restore_from
 reinitialize = FLAGS.reinitialize
 pickle_prefix = FLAGS.pickle_prefix
+need_pickle = bool(pickle_prefix)
 phases = config_train.phases
 
 xe_names = ('xe',)
@@ -420,12 +421,12 @@ def main():
 
         data = dataset[mode]
         random.shuffle(data)
-        batches = data.iterator.pool(
+        batches = torchtext.data.iterator.pool(
             data,
             config_data.n_tokens,
             key=lambda x: (len(x[0]), len(x[1])),
             batch_size_fn=utils.batch_size_fn,
-            random_shuffler=data.iterator.RandomShuffler())
+            random_shuffler=torchtext.data.iterator.RandomShuffler())
 
         for batch in batches:
             step = sess.run(global_step)
@@ -470,46 +471,57 @@ def main():
         batches = _batches(data, config_data.test_batch_size)
 
         ref_hypo_pairs = []
-        fetches = [
-            bs_outputs[:, :, 0],
-            sample_outputs.sample_id,
-            loss_debleu,
-        ]
+        fetches = bs_outputs[:, :, 0],
 
-        with open('{}{}.pkl'.format(pickle_prefix, mode), 'wb') as pickle_file:
-            cnt = 0
-            for batch in batches:
-                padded_batch = data_utils.seq2seq_pad_concat_convert(batch)
-                feed_dict = {
-                    data_batch['source_text_ids']: padded_batch[0],
-                    data_batch['target_text_ids']: padded_batch[1],
-                    tx.global_mode(): tf.estimator.ModeKeys.EVAL,
-                    mask_pattern_[0]: 1,
-                    mask_pattern_[1]: 0,
-                }
+        if need_pickle:
+            pickle_file = open('{}{}.pkl'.format(pickle_prefix, mode), 'wb')
+            fetches += sample_outputs.sample_id, loss_debleu
 
+        cnt = 0
+        for batch in batches:
+            padded_batch = data_utils.seq2seq_pad_concat_convert(batch)
+            feed_dict = {
+                data_batch['source_text_ids']: padded_batch[0],
+                data_batch['target_text_ids']: padded_batch[1],
+                tx.global_mode(): tf.estimator.ModeKeys.EVAL,
+                mask_pattern_[0]: 1,
+                mask_pattern_[1]: 0,
+            }
+
+            all_ids = batch[1],
+            if need_pickle:
                 bs_output_ids, sample_output_ids, _loss_debleu = \
                     sess.run(fetches, feed_dict)
-                target_ids, bs_output_ids, sample_output_ids = map(
-                    lambda sents: list(map(lambda sent: sent.tolist(), sents)),
-                    (batch[1], bs_output_ids, sample_output_ids))
-                target_texts, bs_output_texts, sample_output_texts = map(
-                    lambda ids: list(map(
-                        lambda sent_ids: list(map(
-                            lambda token_id: id2w[token_id],
-                            strip_eos_id(sent_ids))),
-                        ids)),
-                    (target_ids, bs_output_ids, sample_output_ids))
+                all_ids += bs_output_ids, sample_output_ids
+            else:
+                bs_output_ids, = sess.run(fetches, feed_dict)
+                all_ids += bs_output_ids,
 
+            all_ids = map(
+                lambda sents: list(map(lambda sent: sent.tolist(), sents)),
+                all_ids)
+            all_texts = map(
+                lambda ids: list(map(
+                    lambda sent_ids: list(map(
+                        lambda token_id: id2w[token_id],
+                        strip_eos_id(sent_ids))),
+                    ids)),
+                all_ids)
+
+            target_texts, bs_output_texts = all_texts[:2]
+
+            if need_pickle:
                 pickle.dump(
-                    (target_texts, bs_output_texts, sample_output_texts,
-                     _loss_debleu),
+                    all_texts + (_loss_debleu,),
                     pickle_file)
 
-                ref_hypo_pairs.extend(
-                    zip(map(lambda x: [x], target_texts), bs_output_texts))
-                cnt += 1
-                print(cnt)
+            ref_hypo_pairs.extend(
+                zip(map(lambda x: [x], target_texts), bs_output_texts))
+            cnt += 1
+            print(cnt)
+
+        if need_pickle:
+            pickle_file.close()
 
         refs, hypos = zip(*ref_hypo_pairs)
         bleu = corpus_bleu(refs, hypos) * 100
