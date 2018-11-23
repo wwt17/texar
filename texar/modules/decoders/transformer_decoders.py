@@ -162,7 +162,7 @@ class TransformerDecoder(ModuleBase):
                 # Additional for TransformerDecoder
                 "embedding_tie": True,
                 "output_layer_bias": False,
-                "max_decoding_length": 1e10,
+                "max_decoding_length": int(1e10),
                 "name": "transformer_decoder"
             }
 
@@ -234,7 +234,7 @@ class TransformerDecoder(ModuleBase):
             "position_embedder_hparams": None,
             "embedding_tie": True,
             "output_layer_bias": False,
-            "max_decoding_length": 1e10,
+            "max_decoding_length": int(1e10),
             "embedding_dropout": 0.1,
             "residual_dropout": 0.1,
             "poswise_feedforward": default_transformer_poswise_net_hparams(),
