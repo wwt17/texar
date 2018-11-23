@@ -219,7 +219,7 @@ def build_model(batch, train_data, learning_rate):
     if beam_width <= 1:
         bs_outputs = tf.expand_dims(bs_outputs[0].sample_id, -1)
     else:
-        bs_outputs = bs_outputs['sample_id'][:, :, 0]
+        bs_outputs = bs_outputs['sample_id']
 
     # sampling:
     n_samples = config_train.n_samples
