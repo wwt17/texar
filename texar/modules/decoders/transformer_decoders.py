@@ -417,6 +417,9 @@ class TransformerDecoder(ModuleBase):
             memory_attention_bias = attn.attention_bias_ignore_padding(
                 enc_padding)
 
+        if helper is not None:
+            decoding_strategy = None
+
         if beam_width <= 1 and decoding_strategy == 'train_greedy':
             if sequence_length is not None:
                 inputs = mask_sequences(inputs, sequence_length, tensor_rank=3)
