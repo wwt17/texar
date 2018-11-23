@@ -23,7 +23,7 @@ emb = {
         'type': 'random_normal_initializer',
         'kwargs': {
             'mean': 0.0,
-            'stddev': hidden_dim**-0.5,
+            'stddev': d_model**-0.5,
         },
     }
 }
@@ -94,7 +94,7 @@ opt = {
 
 lr = {
     'learning_rate_schedule': 'constant.linear_warmup.rsqrt_decay.rsqrt_depth',
-    'lr_constant': 2 * (hidden_dim ** -0.5),
+    'lr_constant': 2 * (d_model ** -0.5),
     'static_lr': 1e-3,
     'warmup_steps': 16000,
 }
