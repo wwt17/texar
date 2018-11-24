@@ -479,6 +479,7 @@ def main():
 
         cnt = 0
         for batch in batches:
+            sources, targets = zip(*batch)
             padded_batch = data_utils.seq2seq_pad_concat_convert(batch)
             feed_dict = {
                 data_batch['source_text_ids']: padded_batch[0],
@@ -488,7 +489,7 @@ def main():
                 mask_pattern_[1]: 0,
             }
 
-            all_ids = batch[1],
+            all_ids = targets,
             if need_pickle:
                 bs_output_ids, sample_output_ids, _loss_debleu = \
                     sess.run(fetches, feed_dict)
