@@ -500,13 +500,13 @@ def main():
             all_ids = map(
                 lambda sents: list(map(lambda sent: sent.tolist(), sents)),
                 all_ids)
-            all_texts = map(
+            all_texts = tuple(map(
                 lambda ids: list(map(
                     lambda sent_ids: list(map(
                         lambda token_id: id2w[token_id],
                         strip_eos_id(sent_ids))),
                     ids)),
-                all_ids)
+                all_ids))
 
             target_texts, bs_output_texts = all_texts[:2]
 
