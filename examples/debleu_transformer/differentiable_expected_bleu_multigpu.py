@@ -73,6 +73,9 @@ ckpt_model = os.path.join(dir_model, 'model.ckpt')
 ckpt_best = os.path.join(dir_best, 'model.ckpt')
 
 
+devices = ['/device:GPU:0', '/device:GPU:1']
+
+
 def get_scope_by_name(tensor):
     return tensor.name[: tensor.name.rfind('/') + 1]
 
@@ -130,7 +133,7 @@ def build_model(batch, train_data, learning_rate):
 
     train_ops = {}
 
-    with tf.device('/device:GPU:0'):
+    with tf.device(devices[0]):
         embedder = tx.modules.WordEmbedder(
             vocab_size=vocab_size, hparams=config_model.embedder)
 
@@ -168,14 +171,14 @@ def build_model(batch, train_data, learning_rate):
         is_target = tf.to_float(tf.not_equal(batch['labels'], pad_token_id))
         loss_xe = tf.reduce_sum(loss_xe * is_target) / tf.reduce_sum(is_target)
 
-    with tf.device('/device:GPU:1'):
+    with tf.device(devices[1]):
         for xe_name in xe_names:
             train_ops[xe_name] = tx.core.get_train_op(
                 loss_xe,
                 learning_rate=learning_rate,
                 hparams=getattr(config_train, 'train_{}'.format(xe_name)))
 
-    with tf.device('/device:GPU:0'):
+    with tf.device(devices[0]):
         # teacher mask + DEBLEU fine-tuning
         n_unmask = tf.placeholder(tf.int32, shape=[], name="n_unmask")
         n_mask = tf.placeholder(tf.int32, shape=[], name="n_mask")
@@ -199,13 +202,13 @@ def build_model(batch, train_data, learning_rate):
             probs=tm_outputs.sample_id,
             sequence_length=batch['target_length']-1)
 
-    with tf.device('/device:GPU:1'):
+    with tf.device(devices[1]):
         for debleu_name in debleu_names:
             train_ops[debleu_name] = tx.core.get_train_op(
                 loss_debleu,
                 hparams=getattr(config_train, 'train_{}'.format(debleu_name)))
 
-    with tf.device('/device:GPU:0'):
+    with tf.device(devices[0]):
         # start and end tokens
         start_tokens = tf.ones_like(batch['target_length']) * bos_token_id
         end_token = eos_token_id
@@ -281,7 +284,7 @@ def build_model(batch, train_data, learning_rate):
             end_token=end_token,
             memory=enc_outputs,
             memory_sequence_length=batch['source_length'],
-            max_decoding_length=config_train.infer_max_decoding_length)
+            max_decoding_length=config_train.greedy_max_decoding_length)
 
         greedy_reward = tf.py_func(
             batch_bleu, [batch['target_text_ids'], greedy_outputs.sample_id],
@@ -294,7 +297,7 @@ def build_model(batch, train_data, learning_rate):
             sequence_length=sample_length,
             average_across_batch=False)
 
-    with tf.device('/device:GPU:1'):
+    with tf.device(devices[1]):
         def get_pg_loss(baseline_reward, name):
             loss_pg = tf.reduce_mean(
                 (sample_reward - tile(baseline_reward)) * nll_pg)

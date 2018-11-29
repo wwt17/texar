@@ -38,9 +38,9 @@ train_xe = {
 train_debleu = {
     'name': 'debleu',
     'optimizer': {
-        'type': 'AdamOptimizer',
+        'type': 'GradientDescentOptimizer',
         'kwargs': {
-            'learning_rate': 3e-4
+            'learning_rate': 1e-4
         }
     },
     'gradient_clip': {
@@ -54,9 +54,9 @@ train_debleu = {
 train_pg_grd = {
     'name': 'pg_grd',
     'optimizer': {
-        'type': 'AdamOptimizer',
+        'type': 'GradientDescentOptimizer',
         'kwargs': {
-            'learning_rate': 3e-4
+            'learning_rate': 1e-4
         }
     },
     'gradient_clip': {
@@ -70,9 +70,9 @@ train_pg_grd = {
 train_pg_msp = {
     'name': 'pg_msp',
     'optimizer': {
-        'type': 'AdamOptimizer',
+        'type': 'GradientDescentOptimizer',
         'kwargs': {
-            'learning_rate': 3e-4
+            'learning_rate': 1e-4
         }
     },
     'gradient_clip': {
