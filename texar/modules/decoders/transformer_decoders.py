@@ -577,10 +577,12 @@ class TransformerDecoder(ModuleBase):
             else:
                 affine_bias = None
 
+            transposed_embedding = tf.transpose(self._embedding)
+
             def _outputs_to_logits(outputs):
                 shape = shape_list(outputs)
                 outputs = tf.reshape(outputs, [-1, dim])
-                logits = tf.matmul(outputs, self._embedding, transpose_b=True)
+                logits = tf.matmul(outputs, transposed_embedding)
                 if affine_bias is not None:
                     logits += affine_bias
                 logits = tf.reshape(logits, shape[:-1] + [self._vocab_size])
