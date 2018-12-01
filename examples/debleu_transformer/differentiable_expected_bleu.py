@@ -30,10 +30,10 @@ import texar as tx
 from texar.utils import transformer_utils
 import numpy as np
 
-from nltk.translate.bleu_score import corpus_bleu
 from utils import data_utils, utils
 from utils.preprocess import pad_token_id, bos_token_id, eos_token_id, \
     unk_token_id
+
 
 flags = tf.flags
 
@@ -102,6 +102,19 @@ def strip_eos_id(sent_id):
         return sent_id[:sent_id.index(eos_token_id)]
     except ValueError:
         return sent_id
+
+
+def corpus_bleu(refs, hypos):
+    def join_and_decode(sent):
+        sent = ' '.join(sent)
+        sent = sent.replace('@@ ', '')
+        if sent.endswith('@@'):
+            sent = sent[:-len('@@')]
+        return sent
+
+    refs = list(map(lambda sents: list(map(join_and_decode, sents)), refs))
+    hypos = list(map(join_and_decode, hypos))
+    return tx.evals.corpus_bleu_moses(refs, hypos, return_all=False)
 
 
 def build_model(batch, train_data, learning_rate):
@@ -527,7 +540,7 @@ def main():
             pickle_file.close()
 
         refs, hypos = zip(*ref_hypo_pairs)
-        bleu = corpus_bleu(refs, hypos) * 100
+        bleu = corpus_bleu(refs, hypos)
         print('{} BLEU: {}'.format(mode, bleu))
 
         step = tf.train.global_step(sess, global_step)
