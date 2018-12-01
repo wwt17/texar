@@ -276,7 +276,7 @@ def build_model(batch, train_data, learning_rate):
         end_token=end_token,
         memory=enc_outputs,
         memory_sequence_length=batch['source_length'],
-        max_decoding_length=config_train.infer_max_decoding_length)
+        max_decoding_length=config_train.greedy_max_decoding_length)
 
     greedy_reward = tf.py_func(
         batch_bleu, [batch['target_text_ids'], greedy_outputs.sample_id],
