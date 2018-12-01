@@ -9,8 +9,7 @@ cluster = {
     'worker': [
         f(hserver, 50000),
         f(xiaodan, 50000),
-        f(xiaodan2, 50000),
-        f(xiaodan2, 50001),
         f(daoyuan, 50000),
+        f(h2, 50000),
         ],
 }
