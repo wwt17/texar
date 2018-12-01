@@ -12,19 +12,19 @@ phases = [
     ("train", "debleu", (1, 0)),
 ]
 
-max_order = 4
-weights=[.1, .3, .3, .3]
+max_order = 8
+weights=[1. / max_order for _ in range(max_order)]
 
 loss_label_confidence = 0.9
 tau = 1.
 
-infer_max_decoding_length = 50
+infer_max_decoding_length = 200
 infer_beam_width = 1
 infer_alpha = 0.6
 
 n_samples = 1
-sample_max_decoding_length = 50
-greedy_max_decoding_length = 50
+sample_max_decoding_length = 200
+greedy_max_decoding_length = 200
 
 weight_pg_grd = 1.
 weight_pg_msp = 1.

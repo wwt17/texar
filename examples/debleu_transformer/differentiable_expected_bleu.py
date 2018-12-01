@@ -194,7 +194,9 @@ def build_model(batch, train_data, learning_rate):
     loss_debleu = tx.losses.debleu(
         labels=batch['target_text_ids'][:, 1:],
         probs=tm_outputs.sample_id,
-        sequence_length=batch['target_length']-1)
+        sequence_length=batch['target_length']-1,
+        max_order=config_train.max_order,
+        weights=config_train.weights)
 
     for debleu_name in debleu_names:
         train_ops[debleu_name] = tx.core.get_train_op(
