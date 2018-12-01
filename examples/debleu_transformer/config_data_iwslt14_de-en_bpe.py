@@ -1,4 +1,4 @@
-n_tokens = 1024
+n_tokens = 512
 test_batch_size = 64
 
 filename_prefix = "processed."
