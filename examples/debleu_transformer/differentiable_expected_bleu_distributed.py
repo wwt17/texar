@@ -412,6 +412,8 @@ def main():
             _saver = tf.train.Saver(max_to_keep=None)
 
             def _save_to(directory, step):
+                print('manual saving is disabled')
+                return
                 print('saving to {} ...'.format(directory))
                 saved_path = _saver.save(sess, directory, global_step=step)
 
