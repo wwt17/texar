@@ -221,20 +221,25 @@ def build_model(batch, train_data, learning_rate):
     end_token = eos_token_id
 
     # inference: beam search decoding
-    beam_width = config_train.infer_beam_width
-    bs_outputs = decoder(
-        decoding_strategy='infer_greedy',
-        start_tokens=start_tokens,
-        end_token=end_token,
-        memory=enc_outputs,
-        memory_sequence_length=batch['source_length'],
-        beam_width=beam_width,
-        alpha=config_train.infer_alpha,
-        max_decoding_length=config_train.infer_max_decoding_length)
-    if beam_width <= 1:
-        bs_outputs = tf.expand_dims(bs_outputs[0].sample_id, -1)
-    else:
-        bs_outputs = bs_outputs['sample_id']
+    _bs_outputs = []
+    for max_decoding_length, beam_width, alpha in config_train.infer_configs:
+        bs_outputs = decoder(
+            decoding_strategy='infer_greedy',
+            start_tokens=start_tokens,
+            end_token=end_token,
+            memory=enc_outputs,
+            memory_sequence_length=batch['source_length'],
+            beam_width=beam_width,
+            alpha=alpha,
+            max_decoding_length=max_decoding_length)
+        if beam_width <= 1:
+            bs_outputs = tf.expand_dims(bs_outputs[0].sample_id, -1)
+        else:
+            bs_outputs = bs_outputs['sample_id']
+
+        _bs_outputs.append(bs_outputs)
+
+    bs_outputs = _bs_outputs
 
     # sampling:
     n_samples = config_train.n_samples
@@ -485,8 +490,8 @@ def main():
 
         batches = _batches(data, config_data.test_batch_size)
 
-        ref_hypo_pairs = []
-        fetches = bs_outputs[:, :, 0],
+        texts = []
+        fetches = bs_outputs
 
         if need_pickle:
             pickle_file = open('{}{}.pkl'.format(pickle_prefix, mode), 'wb')
@@ -504,19 +509,18 @@ def main():
                 mask_pattern_[1]: 0,
             }
 
-            all_ids = targets,
+            fetched = sess.run(fetches, feed_dict)
+            bs_output_ids = fetched[: len(bs_outputs)]
+            bs_output_ids = list(map(lambda ids: ids[:, :, 0], bs_output_ids))
+            all_ids = [targets] + bs_output_ids
             if need_pickle:
-                bs_output_ids, sample_output_ids, _loss_debleu = \
-                    sess.run(fetches, feed_dict)
-                all_ids += bs_output_ids, sample_output_ids
-            else:
-                bs_output_ids, = sess.run(fetches, feed_dict)
-                all_ids += bs_output_ids,
+                sample_output_ids, _loss_debleu = fetched[-2:]
+                all_ids += [sample_output_ids]
 
             all_ids = map(
                 lambda sents: list(map(lambda sent: sent.tolist(), sents)),
                 all_ids)
-            all_texts = tuple(map(
+            all_texts = list(map(
                 lambda ids: list(map(
                     lambda sent_ids: list(map(
                         lambda token_id: id2w[token_id],
@@ -524,35 +528,41 @@ def main():
                     ids)),
                 all_ids))
 
-            target_texts, bs_output_texts = all_texts[:2]
-
             if need_pickle:
                 pickle.dump(
                     all_texts + (_loss_debleu,),
                     pickle_file)
 
-            ref_hypo_pairs.extend(
-                zip(map(lambda x: [x], target_texts), bs_output_texts))
-            cnt += 1
+            texts.extend(zip(*all_texts[: 1 + len(bs_outputs)]))
+            cnt += len(all_texts[0])
             print(cnt)
 
         if need_pickle:
             pickle_file.close()
 
-        refs, hypos = zip(*ref_hypo_pairs)
-        bleu = corpus_bleu(refs, hypos)
-        print('{} BLEU: {}'.format(mode, bleu))
+        texts = list(zip(*texts))
+        refs, hypos = texts[0], texts[1:]
+        refs = list(map(lambda x: [x], refs))
 
         step = tf.train.global_step(sess, global_step)
 
-        summary = tf.Summary()
-        summary.value.add(tag='{}/BLEU'.format(mode), simple_value=bleu)
-        summary_writer.add_summary(summary, step)
-        summary_writer.flush()
+        eval_bleu = None
+
+        for i, hyps in enumerate(hypos):
+            bleu = corpus_bleu(refs, hyps)
+            print('{}_{} BLEU: {}'.format(mode, i, bleu))
+            if eval_bleu is None:
+                eval_bleu = bleu
+
+            summary = tf.Summary()
+            summary.value.add(tag='{}_{}/BLEU'.format(mode, i),
+                              simple_value=bleu)
+            summary_writer.add_summary(summary, step)
+            summary_writer.flush()
 
         if mode == 'val':
             global triggered
-            triggered = convergence_trigger(step, bleu)
+            triggered = convergence_trigger(step, eval_bleu)
             if triggered:
                 print('triggered!')
 
@@ -565,7 +575,7 @@ def main():
         _save_to(ckpt_model, step)
 
         print('end _eval_epoch')
-        return bleu
+        return eval_bleu
 
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
