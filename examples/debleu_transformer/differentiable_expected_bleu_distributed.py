@@ -488,18 +488,20 @@ def main():
 
                     summary_writer.add_summary(summary, step)
 
-                    if step % config_train.steps_per_val == 0:
+                    if (step + 1) % config_train.steps_per_val == 0:
                         global triggered
                         _eval_epoch(sess, summary_writer, 'val')
                         if triggered:
                             break
 
-                    if step % config_train.steps_per_test == 0:
+                    if (step + 1) % config_train.steps_per_test == 0:
                         _eval_epoch(sess, summary_writer, 'test')
 
                 print('end _train_epoch')
 
             def _eval_epoch(sess, summary_writer, mode):
+                global triggered
+                triggered = False
                 print('in _eval_epoch with mode {}'.format(mode))
 
                 data = dataset[mode]
@@ -581,7 +583,6 @@ def main():
                     summary_writer.flush()
 
                 if mode == 'val':
-                    global triggered
                     triggered = convergence_trigger(step, eval_bleu)
                     if triggered:
                         print('triggered!')
@@ -601,9 +602,10 @@ def main():
                 master=server.target,
                 is_chief=(task_index == 0),
                 checkpoint_dir=dir_model,
-                summary_dir=os.path.join(expr_name, 'log'),
+                #summary_dir=os.path.join(expr_name, 'log'),
                 save_checkpoint_steps=config_train.steps_per_val,
-                save_summaries_secs=10,
+                save_summaries_steps=None,
+                save_summaries_secs=None,
                 ) as sess:
             def action(i):
                 if i >= len(phases) - 1:

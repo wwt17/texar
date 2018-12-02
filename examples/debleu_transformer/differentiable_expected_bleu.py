@@ -468,13 +468,13 @@ def main():
 
             summary_writer.add_summary(summary, step)
 
-            if step % config_train.steps_per_val == 0:
+            if (step + 1) % config_train.steps_per_val == 0:
                 global triggered
                 _eval_epoch(sess, summary_writer, 'val')
                 if triggered:
                     break
 
-            if step % config_train.steps_per_test == 0:
+            if (step + 1) % config_train.steps_per_test == 0:
                 _eval_epoch(sess, summary_writer, 'test')
 
         print('end _train_epoch')
