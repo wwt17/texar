@@ -5,13 +5,15 @@ xiaodan2 = '10.20.41.2'
 daoyuan = '10.20.41.21'
 f = '{}:{}'.format
 cluster = {
-    'ps': [f(hserver, 40000)],
+    'ps': [
+        f(hserver, 40000),
+        f(xiaodan, 40000),
+        f(daoyuan, 40000),
+    ],
     'worker': [
         f(hserver, 50000),
         f(xiaodan, 50000),
-        f(xiaodan, 50001),
         f(daoyuan, 50000),
-        f(daoyuan, 50001),
         #f(h2, 50000),
         ],
 }
