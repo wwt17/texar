@@ -428,8 +428,6 @@ def main():
 
             def _restore_from_path(ckpt_path, restore_trigger_names=None, relax=False):
                 print('restoring from {} ...'.format(ckpt_path))
-                tf.reset_default_graph()
-                tf.Graph().as_default()
                 (get_optimistic_saver(ckpt_path) if relax else _saver)\
                     .restore(sess, ckpt_path)
 
@@ -615,8 +613,6 @@ def main():
                 i += 1
                 train_data_name, train_op_name, mask_pattern = phases[i]
                 if reinitialize:
-                    tf.reset_default_graph()
-                    tf.Graph().as_default()
                     sess.run(train_op_initializers[train_op_name])
                 return i
 
