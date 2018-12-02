@@ -645,11 +645,14 @@ def main():
                 print('epoch #{} {}:'.format(
                     epoch, (train_data_name, train_op_name, mask_pattern)))
 
-                val_bleu = _eval_epoch(sess, summary_writer, 'val')
-                test_bleu = _eval_epoch(sess, summary_writer, 'test')
-                if triggered:
-                    _restore_and_anneal()
-                    continue
+                if epoch == 0:
+                    val_bleu, test_bleu = 0., 0.
+                else:
+                    val_bleu = _eval_epoch(sess, summary_writer, 'val')
+                    test_bleu = _eval_epoch(sess, summary_writer, 'test')
+                    if triggered:
+                        _restore_and_anneal()
+                        continue
 
                 step = tf.train.global_step(sess, global_step)
 
