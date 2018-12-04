@@ -134,6 +134,7 @@ from texar.core.optimization import *
 from texar.hyperparams import HParams
 
 hooks = [tf.train.StopAtStepHook(last_step=int(1e9))]
+chief_only_hooks = []
 
 def get_train_op(loss, learning_rate=None, global_step=None, hparams=None):
     if global_step is None:
@@ -477,7 +478,13 @@ def main():
                 config_train.threshold_steps,
                 config_train.minimum_interval_steps)
 
-            _saver = tf.train.Saver(max_to_keep=None)
+            _saver = tf.train.Saver(max_to_keep=None, sharded=True)
+
+            ckpt_saver_hook = tf.train.CheckpointSaverHook(
+                checkpoint_dir=dir_model,
+                save_steps=config_train.steps_per_val,
+                saver=_saver)
+            chief_only_hooks.append(ckpt_saver_hook)
 
             def _save_to(directory, step):
                 print('manual saving is disabled')
@@ -673,12 +680,15 @@ def main():
         with tf.train.MonitoredTrainingSession(
                 master=server.target,
                 is_chief=is_chief,
-                checkpoint_dir=(dir_model if is_chief else None),
+                #checkpoint_dir=(dir_model if is_chief else None),
                 #summary_dir=os.path.join(expr_name, 'log'),
-                save_checkpoint_steps=config_train.steps_per_val,
+                #save_checkpoint_steps=config_train.steps_per_val,
+                save_checkpoint_steps=None,
+                save_checkpoint_secs=None,
                 save_summaries_steps=None,
                 save_summaries_secs=None,
                 hooks=hooks,
+                chief_only_hooks=chief_only_hooks,
                 ) as sess:
             def action(i):
                 if i >= len(phases) - 1:
