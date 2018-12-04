@@ -673,7 +673,7 @@ def main():
         with tf.train.MonitoredTrainingSession(
                 master=server.target,
                 is_chief=is_chief,
-                checkpoint_dir=dir_model,
+                checkpoint_dir=(dir_model if is_chief else None),
                 #summary_dir=os.path.join(expr_name, 'log'),
                 save_checkpoint_steps=config_train.steps_per_val,
                 save_summaries_steps=None,
