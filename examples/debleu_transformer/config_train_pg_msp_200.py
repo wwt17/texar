@@ -13,7 +13,7 @@ phases = [
 loss_label_confidence = 0.9
 tau = 1.
 
-infer_max_decoding_length = 50
+infer_max_decoding_length = 200
 infer_configs = [
     # (max_decoding_length, beam_width, alpha)
     (infer_max_decoding_length, 1, 0.6),
@@ -22,8 +22,8 @@ infer_configs = [
 ]
 
 n_samples = 1
-sample_max_decoding_length = 50
-greedy_max_decoding_length = 50
+sample_max_decoding_length = 200
+greedy_max_decoding_length = 200
 
 weight_pg_grd = 1.
 weight_pg_msp = 1.

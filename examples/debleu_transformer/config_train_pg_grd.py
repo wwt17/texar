@@ -17,12 +17,13 @@ infer_max_decoding_length = 50
 infer_configs = [
     # (max_decoding_length, beam_width, alpha)
     (infer_max_decoding_length, 1, 0.6),
-    #(infer_max_decoding_length, 5, 0.6),
-    #(infer_max_decoding_length, 10, 0.6),
+    (infer_max_decoding_length, 5, 0.6),
+    (infer_max_decoding_length, 10, 0.6),
 ]
 
 n_samples = 1
 sample_max_decoding_length = 50
+greedy_max_decoding_length = 50
 
 weight_pg_grd = 1.
 weight_pg_msp = 1.
