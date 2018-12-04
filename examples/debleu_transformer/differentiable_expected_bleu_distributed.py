@@ -46,6 +46,7 @@ flags.DEFINE_string("job_name", "worker", "job name")
 flags.DEFINE_integer("task_index", 0, "task index")
 flags.DEFINE_string("expr_name", "iwslt14_de-en", "The experiment name. "
                     "Used as the directory name of run.")
+flags.DEFINE_boolean("sync", True, "sync or async")
 flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "restore from. If not specified, the latest checkpoint in "
                     "expr_name is restored.")
@@ -61,6 +62,8 @@ config_train = importlib.import_module(FLAGS.config_train)
 config_dist = importlib.import_module(FLAGS.config_dist)
 job_name = FLAGS.job_name
 task_index = FLAGS.task_index
+is_chief = (task_index == 0)
+sync = FLAGS.sync
 expr_name = FLAGS.expr_name
 restore_from = FLAGS.restore_from
 reinitialize = FLAGS.reinitialize
@@ -121,6 +124,71 @@ def corpus_bleu(refs, hypos):
     refs = list(map(lambda sents: list(map(join_and_decode, sents)), refs))
     hypos = list(map(join_and_decode, hypos))
     return tx.evals.corpus_bleu_moses(refs, hypos, return_all=False)
+
+
+def need_eval(step, last_step, freq):
+    return last_step is not None and last_step / freq != step / freq
+
+
+from texar.core.optimization import *
+from texar.hyperparams import HParams
+
+hooks = [tf.train.StopAtStepHook(last_step=int(1e9))]
+
+def get_train_op(loss, learning_rate=None, global_step=None, hparams=None):
+    if global_step is None:
+        global_step = tf.train.get_global_step()
+
+    hparams = HParams(hparams, default_optimization_hparams())
+
+    opt_hparams = hparams["optimizer"]
+    optimizer_fn, optimizer_class = get_optimizer_fn(opt_hparams)
+
+    if learning_rate is None:
+        learning_rate = opt_hparams["kwargs"].get("learning_rate", None)
+    if learning_rate is None:
+        # Try to get learning_rate from the default value of the
+        # optimizer's argument
+        opt_argspec = tx.utils.get_default_arg_values(optimizer_class.__init__)
+        learning_rate = opt_argspec.get("learning_rate", None)
+
+    grad_clip_fn = get_gradient_clip_fn(hparams["gradient_clip"])
+
+    lr_decay_fn = get_learning_rate_decay_fn(hparams["learning_rate_decay"])
+
+    with tf.variable_scope(hparams["name"], "OptimizeLoss", [loss, global_step]):
+        optimizer = optimizer_fn(learning_rate)
+
+        if sync:
+            n_workers = len(config_dist.cluster['worker'])
+            optimizer = tf.train.SyncReplicasOptimizer(
+                optimizer,
+                replicas_to_aggregate=n_workers,
+                total_num_replicas=n_workers)
+            hooks.append(optimizer.make_session_run_hook(is_chief))
+
+        train_op = optimizer.minimize(
+            loss,
+            global_step=global_step,
+            aggregation_method=tf.AggregationMethod.ADD_N)
+
+        tf.summary.scalar("loss", loss)
+
+    """
+    train_op = tf.contrib.layers.optimize_loss(
+        loss=loss,
+        global_step=global_step,
+        learning_rate=learning_rate,
+        optimizer=optimizer_fn,
+        gradient_noise_scale=hparams["gradient_noise_scale"],
+        clip_gradients=grad_clip_fn,
+        learning_rate_decay_fn=lr_decay_fn,
+        variables=variables,
+        name=hparams["name"],
+        increment_global_step=increment_global_step)
+    """
+
+    return train_op
 
 
 def build_model(batch, train_data, learning_rate):
@@ -187,7 +255,7 @@ def build_model(batch, train_data, learning_rate):
     loss_xe = tf.reduce_sum(loss_xe * is_target) / tf.reduce_sum(is_target)
 
     for xe_name in xe_names:
-        train_ops[xe_name] = tx.core.get_train_op(
+        train_ops[xe_name] = get_train_op(
             loss_xe,
             learning_rate=learning_rate,
             hparams=getattr(config_train, 'train_{}'.format(xe_name)))
@@ -218,7 +286,7 @@ def build_model(batch, train_data, learning_rate):
         weights=config_train.weights)
 
     for debleu_name in debleu_names:
-        train_ops[debleu_name] = tx.core.get_train_op(
+        train_ops[debleu_name] = get_train_op(
             loss_debleu,
             hparams=getattr(config_train, 'train_{}'.format(debleu_name)))
 
@@ -320,7 +388,7 @@ def build_model(batch, train_data, learning_rate):
             (sample_reward - tile(baseline_reward)) * nll_pg)
         weight_pg = getattr(config_train, 'weight_{}'.format(name))
         loss_pg_xe = loss_pg * weight_pg + loss_xe * (1. - weight_pg)
-        train_ops[name] = tx.core.get_train_op(
+        train_ops[name] = get_train_op(
             loss_pg_xe,
             hparams=getattr(config_train, 'train_{}'.format(name)))
         return loss_pg, loss_pg_xe, train_ops[name]
@@ -468,6 +536,8 @@ def main():
                     batch_size_fn=utils.batch_size_fn,
                     random_shuffler=torchtext.data.iterator.RandomShuffler())
 
+                last_step = None
+
                 for batch in batches:
                     step = sess.run(global_step)
 
@@ -488,14 +558,16 @@ def main():
 
                     summary_writer.add_summary(summary, step)
 
-                    if (step + 1) % config_train.steps_per_val == 0:
+                    if need_eval(step, last_step, config_train.steps_per_val):
                         global triggered
                         _eval_epoch(sess, summary_writer, 'val')
                         if triggered:
                             break
 
-                    if (step + 1) % config_train.steps_per_test == 0:
+                    if need_eval(step, last_step, config_train.steps_per_test):
                         _eval_epoch(sess, summary_writer, 'test')
+
+                    last_step = step
 
                 print('end _train_epoch')
 
@@ -600,12 +672,13 @@ def main():
 
         with tf.train.MonitoredTrainingSession(
                 master=server.target,
-                is_chief=(task_index == 0),
+                is_chief=is_chief,
                 checkpoint_dir=dir_model,
                 #summary_dir=os.path.join(expr_name, 'log'),
                 save_checkpoint_steps=config_train.steps_per_val,
                 save_summaries_steps=None,
                 save_summaries_secs=None,
+                hooks=hooks,
                 ) as sess:
             def action(i):
                 if i >= len(phases) - 1:
