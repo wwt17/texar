@@ -13,7 +13,7 @@ phases = [
 ]
 
 max_order = 4
-weights=[.1, .3, .3, .3]
+weights = [.1, .3, .3, .3]
 
 loss_label_confidence = 0.9
 tau = 1.
