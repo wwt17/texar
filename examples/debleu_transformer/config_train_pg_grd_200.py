@@ -20,8 +20,8 @@ infer_max_decoding_length = 200
 infer_configs = [
     # (max_decoding_length, beam_width, alpha)
     (infer_max_decoding_length, 1, 0.6),
-    (infer_max_decoding_length, 5, 0.6),
-    (infer_max_decoding_length, 10, 0.6),
+    #(infer_max_decoding_length, 5, 0.6),
+    #(infer_max_decoding_length, 10, 0.6),
 ]
 
 n_samples = 1

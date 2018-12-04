@@ -7,28 +7,20 @@ minimum_interval_steps = 10000
 phases = [
     # (config_data, config_train, mask_pattern)
     ("train", "xe", None),
-    ("train", "pg_msp", None),
+    ("train", "pg_grd", None),
 ]
-
-max_order = 4
-weights = [.1, .3, .3, .3]
 
 loss_label_confidence = 0.9
 tau = 1.
 
 infer_max_decoding_length = 50
-infer_configs = [
-    # (max_decoding_length, beam_width, alpha)
-    (infer_max_decoding_length, 1, 0.6),
-    #(infer_max_decoding_length, 5, 0.6),
-    #(infer_max_decoding_length, 10, 0.6),
-]
+infer_beam_width = 1
+infer_alpha = 0.6
 
 n_samples = 1
 sample_max_decoding_length = 50
-greedy_max_decoding_length = 50
 
-weight_pg_grd = 1.
+weight_pg_grd = .2
 weight_pg_msp = 1.
 
 train_xe = {
