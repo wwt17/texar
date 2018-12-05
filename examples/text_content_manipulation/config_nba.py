@@ -1,10 +1,10 @@
 import os
 
 dataset = "nba"
-dst_dir = './%s_data/' % dataset
-filename_prefix = '%s.' % dataset
+dst_dir = '{}_data'.format(dataset)
+filename_prefix = '{}.'.format(dataset)
 fields = ['sent', 'entry', 'attribute', 'value', 'sent_ref', 'entry_ref', 'attribute_ref', 'value_ref']
-modes = ['train', 'test', 'valid']
+modes = ['train', 'valid', 'test']
 
 batch_size = 20
 max_num_steps = 20
@@ -13,7 +13,7 @@ hidden_size = structured_emb_size * 3
 
 data_files = {
     mode: {
-        data_name: dst_dir + filename_prefix + '%s.%s.txt' % (data_name, mode)
+        data_name: os.path.join(dst_dir, '{}{}.{}.txt'.format(filename_prefix, data_name, mode))
         for data_name in fields
     }
     for mode in modes
@@ -22,12 +22,12 @@ data_files = {
 data_hparams = {
     stage: {
         "num_epochs": 1,
-        "shuffle": stage != 'test',
+        "shuffle": stage == 'train',
         "batch_size": batch_size,
         "datasets": [
             {
                 "files": [data_files[stage][field]],
-                "vocab_file": os.path.join(dst_dir, '%s.all.vocab.txt' % dataset),
+                "vocab_file": os.path.join(dst_dir, '{}.all.vocab.txt'.format(dataset)),
                 "data_name": field
             } for field in fields]
     }

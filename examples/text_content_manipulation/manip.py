@@ -23,14 +23,13 @@ config = importlib.import_module(FLAGS.config)
 
 def _main(_):
     # data batch
-    train_data = tx.data.MultiAlignedData(config.data_hparams['train'])
-    val_data = tx.data.MultiAlignedData(config.data_hparams['valid'])
-    test_data = tx.data.MultiAlignedData(config.data_hparams['test'])
-    data_iterator = tx.data.TrainTestDataIterator(
-        train=train_data, val=val_data, test=test_data)
+    datasets = {mode: tx.data.MultiAlignedData(hparams)
+                for mode, hparams in config.data_hparams.items()}
+    train_data = datasets['train']
+    data_iterator = tx.data.FeedableDataIterator(datasets)
     data_batch = data_iterator.get_next()
-    batch_size = tf.shape(data_batch["value_text_ids"])[0]
-    num_steps = tf.shape(data_batch["value_text_ids"])[1]
+    batch_size, num_steps = [
+        tf.shape(data_batch["value_text_ids"])[d] for d in range(2)]
 
     sent_vocab = train_data.vocab('sent')
     sent_embedder = tx.modules.WordEmbedder(
@@ -56,13 +55,14 @@ def _main(_):
     attributes = data_batch['attribute_text_ids'][:, 1:-1]
     values = data_batch['value_text_ids'][:, 1:-1]
     sent_embeds = sent_embedder(sents)  # [batch_size, num_steps, hidden_size]
-    structured_data_embeds = \
-        tf.concat([entry_embedder(entries),
-                   attribute_embedder(attributes),
-                   value_embedder(values)], axis=2)  # [batch_size, tup_nums, hidden_size]
+    structured_data_embeds = tf.concat(
+        [entry_embedder(entries),
+         attribute_embedder(attributes),
+         value_embedder(values)],
+        axis=2)  # [batch_size, tup_nums, hidden_size]
     sent_enc_outputs, _ = sent_encoder(sent_embeds)
-    strutctured_data_enc_outputs, _ = \
-        structured_data_encoder(structured_data_embeds)
+    strutctured_data_enc_outputs, _ = structured_data_encoder(
+        structured_data_embeds)
 
     # X' & Y'
     tplt_sents = data_batch['sent_ref_text_ids'][:, :-1]
@@ -70,12 +70,14 @@ def _main(_):
     tplt_attributes = data_batch['attribute_ref_text_ids'][:, 1:-1]
     tplt_values = data_batch['value_ref_text_ids'][:, 1:-1]
     tplt_sent_embeds = sent_embedder(tplt_sents)  # [batch_size, num_steps, hidden_size]
-    tplt_structured_data_embeds = tf.concat([entry_embedder(tplt_entries),
-                                             attribute_embedder(tplt_attributes),
-                                             value_embedder(tplt_values)], axis=2)
+    tplt_structured_data_embeds = tf.concat(
+        [entry_embedder(tplt_entries),
+         attribute_embedder(tplt_attributes),
+         value_embedder(tplt_values)],
+        axis=2)
     tplt_sent_enc_outputs, _ = sent_encoder(tplt_sent_embeds)
-    tplt_strutctured_data_enc_outputs, _ = \
-        structured_data_encoder(tplt_structured_data_embeds)
+    tplt_strutctured_data_enc_outputs, _ = structured_data_encoder(
+        tplt_structured_data_embeds)
 
     # copy net
     cell = tx.core.layers.get_rnn_cell(config.rnn_cell_hparams)
