@@ -1,32 +1,43 @@
 import os
 
-dataset = "nba"
+dataset = 'nba'
 dst_dir = '{}_data'.format(dataset)
 filename_prefix = '{}.'.format(dataset)
 fields = ['sent', 'entry', 'attribute', 'value', 'sent_ref', 'entry_ref', 'attribute_ref', 'value_ref']
-modes = ['train', 'valid', 'test']
+modes = ['train', 'val', 'test']
+mode_to_filemode = {
+    'train': 'train',
+    'val': 'valid',
+    'test': 'test',
+}
 
-batch_size = 20
+train_batch_size = 32
+eval_batch_size = 32
+batch_sizes = {
+    'train': train_batch_size,
+    'val': eval_batch_size,
+    'test': eval_batch_size,
+}
 
 data_files = {
     mode: {
-        data_name: os.path.join(dst_dir, '{}{}.{}.txt'.format(filename_prefix, data_name, mode))
+        data_name: os.path.join(dst_dir, '{}{}.{}.txt'.format(filename_prefix, data_name, mode_to_filemode[mode]))
         for data_name in fields
     }
     for mode in modes
 }
 
 datas = {
-    stage: {
-        "num_epochs": 1,
-        "shuffle": stage == 'train',
-        "batch_size": batch_size,
-        "datasets": [
+    mode: {
+        'num_epochs': 1,
+        'shuffle': mode == 'train',
+        'batch_size': batch_sizes[mode],
+        'datasets': [
             {
-                "files": [data_files[stage][field]],
-                "vocab_file": os.path.join(dst_dir, '{}.all.vocab.txt'.format(dataset)),
-                "data_name": field
+                'files': [data_files[mode][field]],
+                'vocab_file': os.path.join(dst_dir, '{}.all.vocab.txt'.format(dataset)),
+                'data_name': field
             } for field in fields]
     }
-    for stage in modes
+    for mode in modes
 }
