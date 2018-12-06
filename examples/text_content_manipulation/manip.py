@@ -25,7 +25,7 @@ config_model = importlib.import_module(FLAGS.config_model)
 config_train = importlib.import_module(FLAGS.config_train)
 
 
-def _main(_):
+def main():
     # data batch
     datasets = {mode: tx.data.MultiAlignedData(hparams)
                 for mode, hparams in config_data.datas.items()}
@@ -65,7 +65,7 @@ def _main(_):
          value_embedder(values)],
         axis=-1)  # [batch_size, tup_nums, hidden_size]
     sent_enc_outputs, _ = sent_encoder(sent_embeds)
-    strutctured_data_enc_outputs, _ = structured_data_encoder(
+    structured_data_enc_outputs, _ = structured_data_encoder(
         structured_data_embeds)
 
     # X' & Y'
@@ -80,7 +80,7 @@ def _main(_):
          value_embedder(tplt_values)],
         axis=-1)
     tplt_sent_enc_outputs, _ = sent_encoder(tplt_sent_embeds)
-    tplt_strutctured_data_enc_outputs, _ = structured_data_encoder(
+    tplt_structured_data_enc_outputs, _ = structured_data_encoder(
         tplt_structured_data_embeds)
 
     # copy net
@@ -89,7 +89,7 @@ def _main(_):
         cell=cell,
         template_encoder_states=tf.concat(tplt_sent_enc_outputs, -1),
         template_encoder_input_ids=sents,
-        structured_data_encoder_states=tf.concat(strutctured_data_enc_outputs, -1),
+        structured_data_encoder_states=tf.concat(structured_data_enc_outputs, -1),
         structured_data_encoder_input_ids=tf.concat([entries, attributes, values], axis=1),
         vocab_size=sent_vocab.size)
     decoder = tx.modules.BasicRNNDecoder(
@@ -105,4 +105,4 @@ def _main(_):
 
 
 if __name__ == '__main__':
-    tf.app.run(main=_main)
+    main()
