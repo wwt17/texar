@@ -106,7 +106,7 @@ def build_model(data_batch, data):
         vocab_size=sent_vocab.size)
     decoder = tx.modules.BasicRNNDecoder(
         cell=copy_net_cell,
-        vocab_size=sent_vocab.size,
+        output_layer=tf.identity,
         hparams=config_model.decoder)
 
     # teacher-forcing training
