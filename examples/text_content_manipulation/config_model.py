@@ -2,7 +2,7 @@ structured_emb_size = 128
 hidden_size = structured_emb_size * 3
 
 sent_embedder = {
-    'name': 'sent_enbedder',
+    'name': 'sent_embedder',
     "dim": hidden_size,
     'initializer': {
         'type': 'random_normal_initializer',
