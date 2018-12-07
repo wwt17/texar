@@ -65,6 +65,11 @@ def build_model(data_batch, data):
     structured_data_encoder = tx.modules.BidirectionalRNNEncoder(
         hparams=config_model.sd_encoder)
 
+
+    def concat_encoder_outputs(outputs):
+        return tf.concat(outputs, -1)
+
+
     # X & Y
     sents = data_batch['sent_text_ids'][:, :-1]
     entries = data_batch['entry_text_ids'][:, 1:-1]
@@ -77,8 +82,12 @@ def build_model(data_batch, data):
          value_embedder(values)],
         axis=-1)  # [batch_size, tup_nums, hidden_size]
     sent_enc_outputs, _ = sent_encoder(sent_embeds)
+    sent_enc_outputs = concat_encoder_outputs(
+        sent_enc_outputs)
     structured_data_enc_outputs, _ = structured_data_encoder(
         structured_data_embeds)
+    structured_data_enc_outputs = concat_encoder_outputs(
+        structured_data_enc_outputs)
 
     # X' & Y'
     tplt_sents = data_batch['sent_ref_text_ids'][:, :-1]
@@ -92,17 +101,22 @@ def build_model(data_batch, data):
          value_embedder(tplt_values)],
         axis=-1)
     tplt_sent_enc_outputs, _ = sent_encoder(tplt_sent_embeds)
+    tplt_sent_enc_outputs = concat_encoder_outputs(
+        tplt_sent_enc_outputs)
     tplt_structured_data_enc_outputs, _ = structured_data_encoder(
         tplt_structured_data_embeds)
+    tplt_structured_data_enc_outputs = concat_encoder_outputs(
+        tplt_structured_data_enc_outputs)
 
     # copy net decoder
     cell = tx.core.layers.get_rnn_cell(config_model.rnn_cell)
+
     copy_net_cell = CopyNetWrapper(
         cell=cell,
-        template_encoder_states=tf.concat(tplt_sent_enc_outputs, -1),
-        template_encoder_input_ids=sents,
-        structured_data_encoder_states=tf.concat(structured_data_enc_outputs, -1),
-        structured_data_encoder_input_ids=tf.concat([entries, attributes, values], axis=1),
+        template_encoder_states=tplt_sent_enc_outputs,
+        template_encoder_input_ids=tplt_sents,
+        structured_data_encoder_states=structured_data_enc_outputs,
+        structured_data_encoder_input_ids=entries,
         vocab_size=sent_vocab.size)
     decoder = tx.modules.BasicRNNDecoder(
         cell=copy_net_cell,
@@ -116,12 +130,28 @@ def build_model(data_batch, data):
         sequence_length=data_batch['sent_length'] - 1)
 
     # beam-search inference
+    infer_beam_width = config_train.infer_beam_width
+    tiled_copy_net_cell = CopyNetWrapper(
+        cell=cell,
+        template_encoder_states=tile_batch(
+            tplt_sent_enc_outputs, infer_beam_width),
+        template_encoder_input_ids=tile_batch(
+            tplt_sents, infer_beam_width),
+        structured_data_encoder_states=tile_batch(
+            structured_data_enc_outputs, infer_beam_width),
+        structured_data_encoder_input_ids=tile_batch(
+            entries, infer_beam_width),
+        vocab_size=sent_vocab.size)
+    tiled_decoder = tx.modules.BasicRNNDecoder(
+        cell=tiled_copy_net_cell,
+        output_layer=tf.identity,
+        hparams=config_model.decoder)
     start_tokens = tf.ones_like(data_batch['sent_length']) * \
         data.vocab('sent').bos_token_id
     end_token = data.vocab('sent').eos_token_id
 
     bs_outputs, _, _ = tx.modules.beam_search_decode(
-        decoder_or_cell=decoder,
+        decoder_or_cell=tiled_decoder,
         embedding=sent_embedder,
         start_tokens=start_tokens,
         end_token=end_token,
@@ -165,6 +195,7 @@ def main():
 
     saver = tf.train.Saver(max_to_keep=None)
 
+    global best_ever_val_bleu
     best_ever_val_bleu = 0.
 
 
@@ -219,6 +250,8 @@ def main():
 
 
     def _eval_epoch(sess, summary_writer, mode):
+        global best_ever_val_bleu
+
         print('in _eval_epoch with mode {}'.format(mode))
 
         data_iterator.restart_dataset(sess, mode)
@@ -241,7 +274,7 @@ def main():
                 target_texts = tx.utils.strip_special_tokens(
                     target_texts.tolist(), is_token_list=True)
                 output_texts = tx.utils.map_ids_to_strs(
-                    ids=output_ids.tolist(), vocab=val_data.target_vocab,
+                    ids=output_ids.tolist(), vocab=datasets[mode].vocab('sent'),
                     join=False)
 
                 ref_hypo_pairs.extend(zip(target_texts, output_texts))

@@ -7,7 +7,7 @@ from __future__ import division
 from __future__ import print_function
 
 import texar as tx
-
+from tensorflow.contrib.seq2seq import tile_batch
 
 get_scope_name_of_train_op = 'train_{}'.format
 get_scope_name_of_summary_op = 'summary_{}'.format
