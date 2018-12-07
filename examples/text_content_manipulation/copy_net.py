@@ -55,8 +55,9 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self._structured_data_copy_weight = tf.get_variable(
                 'StructuredDataCopyWeight',
                 [self._encoder_state_size, self._cell.output_size])
-            self._projection = tf.layers.Dense(
-                self._vocab_size, use_bias=False, name="OutputProjection")
+            self._projection = tf.get_variable(
+                'OutputProjectionWeight',
+                [self._cell.output_size, self._vocab_size])
 
             self._template_encoder_input_mask = tf.one_hot(
                 self._template_encoder_input_ids, self._vocab_size)  # [batch, num_steps, vocab_size]
@@ -96,7 +97,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
 
             # generate mode
             outputs, cell_state = self._cell(inputs, cell_state, scope)
-            generate_score = self._projection(outputs)  # [batch, gen_vocab_size]
+            generate_score = tf.matmul(outputs, self._projection)  # [batch, gen_vocab_size]
 
             # copy from template
             template_copy_score = tf.nn.tanh(tf.einsum(
