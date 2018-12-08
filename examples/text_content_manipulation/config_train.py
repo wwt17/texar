@@ -17,7 +17,7 @@ train = {
         'gradient_clip': {
             'type': 'clip_by_global_norm',
             'kwargs': {
-                'clip_norm': 5.
+                'clip_norm': 17.5
             }
         },
     },

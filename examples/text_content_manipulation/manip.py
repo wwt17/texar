@@ -26,7 +26,11 @@ flags.DEFINE_string("expr_name", "nba", "The experiment name. "
 flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "restore from. If not specified, the latest checkpoint in "
                     "expr_name is used.")
+flags.DEFINE_boolean("copynet", False, "Whether to use copynet.")
+flags.DEFINE_boolean("attn", False, "Whether to use attention.")
 FLAGS = flags.FLAGS
+
+assert not (FLAGS.copynet and FLAGS.attn)
 
 config_data = importlib.import_module(FLAGS.config_data)
 config_model = importlib.import_module(FLAGS.config_model)
@@ -108,20 +112,42 @@ def build_model(data_batch, data):
     tplt_structured_data_enc_outputs = concat_encoder_outputs(
         tplt_structured_data_enc_outputs)
 
-    # copy net decoder
-    cell = tx.core.layers.get_rnn_cell(config_model.rnn_cell)
+    # get rnn cell
+    rnn_cell = tx.core.layers.get_rnn_cell(config_model.rnn_cell)
+    cell = rnn_cell
+    decoder_params = {
+        'cell': cell,
+        'vocab_size': sent_vocab.size,
+    }
 
-    copy_net_cell = CopyNetWrapper(
-        cell=cell,
-        template_encoder_states=tplt_sent_enc_outputs,
-        template_encoder_input_ids=tplt_sents,
-        structured_data_encoder_states=structured_data_enc_outputs,
-        structured_data_encoder_input_ids=entries,
-        vocab_size=sent_vocab.size)
-    decoder = tx.modules.BasicRNNDecoder(
-        cell=copy_net_cell,
-        output_layer=tf.identity,
-        hparams=config_model.decoder)
+    if FLAGS.copynet: # copynet
+        cell = CopyNetWrapper(
+            cell=cell,
+            template_encoder_states=tplt_sent_enc_outputs,
+            template_encoder_input_ids=tplt_sents,
+            structured_data_encoder_states=structured_data_enc_outputs,
+            structured_data_encoder_input_ids=entries,
+            vocab_size=sent_vocab.size)
+        decoder_params = {
+            'cell': cell,
+            'output_layer': tf.identity,
+        }
+
+    decoder_params['hparams'] = config_model.decoder
+
+    if FLAGS.attn: # attention
+        decoder_params['hparams'] = config_model.attention_decoder
+        memory = tf.concat(
+            [tplt_sent_enc_outputs, structured_data_enc_outputs],
+            axis=1)
+        decoder = tx.modules.AttentionRNNDecoder(
+            memory=memory,
+            memory_sequence_length=tf.ones(
+                [tf.shape(memory)[0]], dtype=tf.int32) * tf.shape(memory)[1],
+            **decoder_params)
+    else:
+        decoder = tx.modules.BasicRNNDecoder(
+            **decoder_params)
 
     # teacher-forcing training
     tf_outputs, _, _ = decoder(
@@ -131,21 +157,26 @@ def build_model(data_batch, data):
 
     # beam-search inference
     infer_beam_width = config_train.infer_beam_width
-    tiled_copy_net_cell = CopyNetWrapper(
-        cell=cell,
-        template_encoder_states=tile_batch(
-            tplt_sent_enc_outputs, infer_beam_width),
-        template_encoder_input_ids=tile_batch(
-            tplt_sents, infer_beam_width),
-        structured_data_encoder_states=tile_batch(
-            structured_data_enc_outputs, infer_beam_width),
-        structured_data_encoder_input_ids=tile_batch(
-            entries, infer_beam_width),
-        vocab_size=sent_vocab.size)
-    tiled_decoder = tx.modules.BasicRNNDecoder(
-        cell=tiled_copy_net_cell,
-        output_layer=tf.identity,
-        hparams=config_model.decoder)
+    tiled_cell = rnn_cell
+    tiled_decoder = decoder
+
+    if FLAGS.copynet:
+        tiled_cell = CopyNetWrapper(
+            cell=rnn_cell,
+            template_encoder_states=tile_batch(
+                tplt_sent_enc_outputs, infer_beam_width),
+            template_encoder_input_ids=tile_batch(
+                tplt_sents, infer_beam_width),
+            structured_data_encoder_states=tile_batch(
+                structured_data_enc_outputs, infer_beam_width),
+            structured_data_encoder_input_ids=tile_batch(
+                entries, infer_beam_width),
+            vocab_size=sent_vocab.size)
+        tiled_decoder = tx.modules.BasicRNNDecoder(
+            cell=tiled_cell,
+            output_layer=tf.identity,
+            hparams=config_model.decoder)
+
     start_tokens = tf.ones_like(data_batch['sent_length']) * \
         data.vocab('sent').bos_token_id
     end_token = data.vocab('sent').eos_token_id
@@ -294,7 +325,7 @@ def main():
         refs, hypos = zip(*ref_hypo_pairs)
         refs = list(map(lambda x: [x], refs))
         bleu = corpus_bleu(refs, hypos)
-        print('{} BLEU: {:.3f}'.format(mode, bleu))
+        print('{} BLEU: {:.2f}'.format(mode, bleu))
 
         step = tf.train.global_step(sess, global_step)
 
@@ -339,7 +370,7 @@ def main():
             step = tf.train.global_step(sess, global_step)
 
             print('epoch: {} ({}), step: {}, '
-                  'val BLEU: {:.3f}, test BLEU: {:.3f}'.format(
+                  'val BLEU: {:.2f}, test BLEU: {:.2f}'.format(
                 epoch, name, step, val_bleu, test_bleu))
 
             _train_epoch(sess, summary_writer, 'train', train_op, summary_op)

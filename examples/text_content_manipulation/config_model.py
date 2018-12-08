@@ -3,7 +3,7 @@ hidden_size = structured_emb_size * 3
 
 sent_embedder = {
     'name': 'sent_embedder',
-    "dim": hidden_size,
+    'dim': hidden_size,
     'initializer': {
         'type': 'random_normal_initializer',
         'kwargs': {
@@ -15,7 +15,7 @@ sent_embedder = {
 
 sd_embedder = {
     'name': 'sd_embedder',
-    "dim": structured_emb_size,
+    'dim': structured_emb_size,
     'initializer': {
         'type': 'random_normal_initializer',
         'kwargs': {
@@ -44,15 +44,28 @@ sd_encoder = {
 }
 
 rnn_cell = {
-    "type": "LSTMBlockCell",
-    "kwargs": {
-        "num_units": hidden_size,
-        "forget_bias": 0.
+    'type': 'LSTMBlockCell',
+    'kwargs': {
+        'num_units': hidden_size,
+        'forget_bias': 0.
     },
-    "dropout": {"output_keep_prob": 0.8},
-    "num_layers": 1
+    'dropout': {
+        'input_keep_prob': 0.8,
+        'state_keep_prob': 0.5,
+    },
+    'num_layers': 1
 }
 
 decoder = {
-    "name": "decoder"
+    'name': 'decoder'
+}
+
+attention_decoder = {
+    'name': 'decoder',
+    'attention': {
+        'type': 'LuongAttention',
+        'kwargs': {
+            'num_units': hidden_size,
+        }
+    }
 }
