@@ -3,7 +3,8 @@ import os
 dataset = 'nba'
 dst_dir = '{}_data'.format(dataset)
 filename_prefix = '{}.'.format(dataset)
-fields = ['sent', 'entry', 'attribute', 'value', 'sent_ref', 'entry_ref', 'attribute_ref', 'value_ref']
+fields = ['sent', 'entry', 'attribute', 'value',
+          'sent_ref', 'entry_ref', 'attribute_ref', 'value_ref']
 modes = ['train', 'val', 'test']
 mode_to_filemode = {
     'train': 'train',
@@ -19,14 +20,6 @@ batch_sizes = {
     'test': eval_batch_size,
 }
 
-data_files = {
-    mode: {
-        data_name: os.path.join(dst_dir, '{}{}.{}.txt'.format(filename_prefix, data_name, mode_to_filemode[mode]))
-        for data_name in fields
-    }
-    for mode in modes
-}
-
 datas = {
     mode: {
         'num_epochs': 1,
@@ -34,8 +27,10 @@ datas = {
         'batch_size': batch_sizes[mode],
         'datasets': [
             {
-                'files': [data_files[mode][field]],
-                'vocab_file': os.path.join(dst_dir, '{}.all.vocab.txt'.format(dataset)),
+                'files': [os.path.join(dst_dir, '{}{}.{}.txt'.format(
+                    filename_prefix, field, mode_to_filemode[mode]))],
+                'vocab_file': os.path.join(dst_dir, '{}.all.vocab.txt'.format(
+                    dataset)),
                 'data_name': field
             } for field in fields]
     }

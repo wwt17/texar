@@ -262,10 +262,11 @@ def main():
 
         ref_hypo_pairs = []
         fetches = [
-            data_batch['sent_text_ids'],
+            data_batch['sent_text'],
             bs_outputs.predicted_ids,
         ]
 
+        cnt = 0
         while True:
             try:
                 target_texts, output_ids = sess.run(fetches, feed_dict)
@@ -277,6 +278,13 @@ def main():
                     ids=output_ids.tolist(), vocab=datasets[mode].vocab('sent'),
                     join=False)
 
+                for ref, hypo in zip(target_texts, output_texts):
+                    if cnt < 10:
+                        print('ref {}: {}'.format(cnt, ' '.join(ref)))
+                        print('hyp {}: {}'.format(cnt, ' '.join(hypo)))
+                    cnt += 1
+                print('processed {} samples'.format(cnt))
+
                 ref_hypo_pairs.extend(zip(target_texts, output_texts))
 
             except tf.errors.OutOfRangeError:
@@ -285,7 +293,7 @@ def main():
         refs, hypos = zip(*ref_hypo_pairs)
         refs = list(map(lambda x: [x], refs))
         bleu = corpus_bleu(refs, hypos)
-        print('{} BLEU: {}'.format(mode, bleu))
+        print('{} BLEU: {:.3f}'.format(mode, bleu))
 
         step = tf.train.global_step(sess, global_step)
 
@@ -329,8 +337,9 @@ def main():
 
             step = tf.train.global_step(sess, global_step)
 
-            print('epoch: {} ({}), step: {}, val BLEU: {}, test BLEU: {}'\
-                .format(epoch, name, step, val_bleu, test_bleu))
+            print('epoch: {} ({}), step: {}, '
+                  'val BLEU: {:.3f}, test BLEU: {:.3f}'.format(
+                epoch, name, step, val_bleu, test_bleu))
 
             _train_epoch(sess, summary_writer, 'train', train_op, summary_op)
 
