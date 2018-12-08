@@ -218,6 +218,7 @@ def main():
     def _restore_from(directory):
         if os.path.exists(directory):
             ckpt_path = tf.train.latest_checkpoint(directory)
+            _restore_from_path(ckpt_path)
 
         else:
             print('cannot find checkpoint directory {}'.format(directory))
