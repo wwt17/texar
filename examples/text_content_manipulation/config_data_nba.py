@@ -25,13 +25,14 @@ datas = {
         'num_epochs': 1,
         'shuffle': mode == 'train',
         'batch_size': batch_sizes[mode],
+        'allow_smaller_final_batch': mode != 'train',
         'datasets': [
             {
                 'files': [os.path.join(dst_dir, '{}{}.{}.txt'.format(
                     filename_prefix, field, mode_to_filemode[mode]))],
                 'vocab_file': os.path.join(dst_dir, '{}.all.vocab.txt'.format(
                     dataset)),
-                'data_name': field
+                'data_name': field,
             } for field in fields]
     }
     for mode in modes

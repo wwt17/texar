@@ -127,7 +127,8 @@ def build_model(data_batch, data):
             template_encoder_input_ids=tplt_sents,
             structured_data_encoder_states=structured_data_enc_outputs,
             structured_data_encoder_input_ids=entries,
-            vocab_size=sent_vocab.size)
+            vocab_size=sent_vocab.size,
+            input_ids=sents)
         decoder_params = {
             'cell': cell,
             'output_layer': tf.identity,
@@ -171,7 +172,8 @@ def build_model(data_batch, data):
                 structured_data_enc_outputs, infer_beam_width),
             structured_data_encoder_input_ids=tile_batch(
                 entries, infer_beam_width),
-            vocab_size=sent_vocab.size)
+            vocab_size=sent_vocab.size,
+            input_ids=sents)
         tiled_decoder = tx.modules.BasicRNNDecoder(
             cell=tiled_cell,
             output_layer=tf.identity,
@@ -202,7 +204,7 @@ def build_model(data_batch, data):
         name: get_train_op(loss, hparams=config_train.train[name])
         for name, loss in losses.items()}
 
-    return train_ops, bs_outputs
+    return train_ops, tf_outputs, bs_outputs
 
 
 def main():
@@ -214,7 +216,8 @@ def main():
 
     global_step = tf.train.get_or_create_global_step()
 
-    train_ops, bs_outputs = build_model(data_batch, datasets['train'])
+    train_ops, tf_outputs, bs_outputs = build_model(
+        data_batch, datasets['train'])
 
     summary_ops = {
         name: tf.summary.merge(
