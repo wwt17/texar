@@ -2,8 +2,8 @@ max_epochs = 1000
 steps_per_val = 2000
 steps_per_test = 10000
 
-threshold_steps = 20000
-minimum_interval_steps = 10000
+threshold_steps = 50000
+minimum_interval_steps = 50000
 phases = [
     # (config_data, config_train, mask_pattern)
     ("train", "xe", None),
