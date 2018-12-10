@@ -15,12 +15,13 @@ def get_embedder_hparams(dim, name):
     }
 
 
-sent_embedder, entry_embedder, attribute_embedder, value_embedder = (
-    get_embedder_hparams(dim, name) for name, dim in
-     (('sent_embedder', dim),
-      ('entry_embedder', dim / 2),
-      ('attribute_embedder', dim / 8),
-      ('value_embedder', dim / 8 * 3)))
+embedders = {
+    name: get_embedder_hparams(dim, '{}_embedder'.format(name))
+    for name, dim in (
+        ('sent', dim),
+        ('entry', dim / 2),
+        ('attribute', dim / 8),
+        ('value', dim / 8 * 3))}
 
 sent_encoder = {
     'name': 'sent_encoder',

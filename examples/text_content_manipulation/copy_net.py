@@ -25,8 +25,8 @@ class CopyNetWrapperState(collections.namedtuple(
 class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
     def __init__(
             self, cell,
-            template_encoder_states, template_encoder_input_ids,
-            structured_data_encoder_states, structured_data_encoder_input_ids,
+            tplt_encoder_states, tplt_encoder_input_ids,
+            sd_encoder_states, sd_encoder_input_ids,
             vocab_size, input_ids,
             encoder_state_size=None, initial_cell_state=None,
             reuse=tf.AUTO_REUSE, name=None):
@@ -37,26 +37,23 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self._vocab_size = vocab_size
             self._input_ids = input_ids
 
-            self._template_encoder_input_ids = template_encoder_input_ids
-            self._template_encoder_states = \
-                template_encoder_states  # refer to h in the paper
-            self._structured_data_encoder_input_ids = \
-                structured_data_encoder_input_ids
-            self._structured_data_encoder_states = \
-                structured_data_encoder_states
+            self._tplt_encoder_input_ids = tplt_encoder_input_ids
+            self._tplt_encoder_states = tplt_encoder_states  # refer to h in the paper
+            self._sd_encoder_input_ids = sd_encoder_input_ids
+            self._sd_encoder_states = sd_encoder_states
 
             if encoder_state_size is None:
-                encoder_state_size = self._template_encoder_states.shape[-1].value
+                encoder_state_size = self._tplt_encoder_states.shape[-1].value
                 if encoder_state_size is None:
                     raise ValueError("encoder_state_size must be set if we can't "
                                      "infer encoder_states last dimension size.")
             self._encoder_state_size = encoder_state_size
 
             self._initial_cell_state = initial_cell_state
-            self._template_copy_weight = tf.get_variable(
+            self._tplt_copy_weight = tf.get_variable(
                 'TemplateCopyWeight',
                 [self._encoder_state_size, self._cell.output_size])
-            self._structured_data_copy_weight = tf.get_variable(
+            self._sd_copy_weight = tf.get_variable(
                 'StructuredDataCopyWeight',
                 [self._encoder_state_size, self._cell.output_size])
             self._projection = tf.get_variable(
@@ -90,12 +87,12 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             return tf.einsum("ijk,ij->ik", encoder_states, rou)
 
         tplt_selective_read = _get_selective_read(
-            self._template_encoder_input_ids,
-            self._template_encoder_states,
+            self._tplt_encoder_input_ids,
+            self._tplt_encoder_states,
             state.prob_tplt)
         sd_selective_read = _get_selective_read(
-            self._structured_data_encoder_input_ids,
-            self._structured_data_encoder_states,
+            self._sd_encoder_input_ids,
+            self._sd_encoder_states,
             state.prob_sd)
         inputs = tf.concat([inputs, tplt_selective_read, sd_selective_read], -1)  # y_(t-1)
 
@@ -107,32 +104,32 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         sumexp_generate_score = tf.reduce_sum(exp_generate_score, 1)
 
         # copy from template
-        template_copy_score = tf.nn.tanh(tf.einsum(
+        tplt_copy_score = tf.nn.tanh(tf.einsum(
             "ijk,km->ijm",
-            self._template_encoder_states,
-            self._template_copy_weight))  # [batch, num_steps, m]
-        template_copy_score = tf.einsum(
+            self._tplt_encoder_states,
+            self._tplt_copy_weight))  # [batch, num_steps, m]
+        tplt_copy_score = tf.einsum(
             "ijm,im->ij",
-            template_copy_score,
+            tplt_copy_score,
             outputs)  # [batch, num_steps]
-        template_copy_score = tf.cast(template_copy_score, tf.float64)
-        exp_template_copy_score = tf.exp(template_copy_score)
-        sumexp_template_copy_score = tf.reduce_sum(exp_template_copy_score, 1)
+        tplt_copy_score = tf.cast(tplt_copy_score, tf.float64)
+        exp_tplt_copy_score = tf.exp(tplt_copy_score)
+        sumexp_tplt_copy_score = tf.reduce_sum(exp_tplt_copy_score, 1)
 
         # copy from structured data
-        structured_data_copy_score = tf.nn.tanh(tf.einsum(
+        sd_copy_score = tf.nn.tanh(tf.einsum(
             "ijk,km->ijm",
-            self._structured_data_encoder_states,
-            self._structured_data_copy_weight))  # [batch, num_steps, m]
-        structured_data_copy_score = tf.einsum(
+            self._sd_encoder_states,
+            self._sd_copy_weight))  # [batch, num_steps, m]
+        sd_copy_score = tf.einsum(
             "ijm,im->ij",
-            structured_data_copy_score,
+            sd_copy_score,
             outputs)  # [batch, num_steps]
-        structured_data_copy_score = tf.cast(structured_data_copy_score, tf.float64)
-        exp_structured_data_copy_score = tf.exp(structured_data_copy_score)
-        sumexp_structured_data_copy_score = tf.reduce_sum(exp_structured_data_copy_score, 1)
+        sd_copy_score = tf.cast(sd_copy_score, tf.float64)
+        exp_sd_copy_score = tf.exp(sd_copy_score)
+        sumexp_sd_copy_score = tf.reduce_sum(exp_sd_copy_score, 1)
 
-        Z = sumexp_generate_score + sumexp_template_copy_score + sumexp_structured_data_copy_score
+        Z = sumexp_generate_score + sumexp_tplt_copy_score + sumexp_sd_copy_score
         Z_ = tf.expand_dims(Z, 1)
 
         probs_generate = exp_generate_score / Z_
@@ -151,11 +148,11 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             return tf.scatter_nd(indices, prob, [batch_size, self._vocab_size])
 
 
-        prob_tplt = exp_template_copy_score / Z_
-        probs_tplt = steps_to_vocabs(self._template_encoder_input_ids, prob_tplt)
+        prob_tplt = exp_tplt_copy_score / Z_
+        probs_tplt = steps_to_vocabs(self._tplt_encoder_input_ids, prob_tplt)
 
-        prob_sd = exp_structured_data_copy_score / Z_
-        probs_sd = steps_to_vocabs(self._structured_data_encoder_input_ids, prob_sd)
+        prob_sd = exp_sd_copy_score / Z_
+        probs_sd = steps_to_vocabs(self._sd_encoder_input_ids, prob_sd)
 
         probs = probs_generate + probs_tplt + probs_sd
         outputs = tf.log(probs)
@@ -194,10 +191,10 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                 cell_state = self._cell.zero_state(batch_size, dtype)
             last_ids = tf.zeros([batch_size], tf.int64) - 1
             prob_tplt = tf.zeros(
-                [batch_size, tf.shape(self._template_encoder_states)[1]],
+                [batch_size, tf.shape(self._tplt_encoder_states)[1]],
                 tf.float64)
             prob_sd = tf.zeros(
-                [batch_size, tf.shape(self._structured_data_encoder_states)[1]],
+                [batch_size, tf.shape(self._sd_encoder_states)[1]],
                 tf.float64)
             return CopyNetWrapperState(
                 cell_state=cell_state,

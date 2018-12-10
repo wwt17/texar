@@ -48,25 +48,21 @@ ckpt_best = os.path.join(dir_best, 'model.ckpt')
 def build_model(data_batch, data):
     batch_size, num_steps = [
         tf.shape(data_batch["value_text_ids"])[d] for d in range(2)]
+    vocab = data.vocab('sent')
+
+    # losses
+    losses = {}
 
     # embedders
-    sent_vocab = data.vocab('sent')
-    sent_embedder = tx.modules.WordEmbedder(
-        vocab_size=sent_vocab.size, hparams=config_model.sent_embedder)
-    entry_vocab = data.vocab('entry')
-    entry_embedder = tx.modules.WordEmbedder(
-        vocab_size=entry_vocab.size, hparams=config_model.entry_embedder)
-    attribute_vocab = data.vocab('attribute')
-    attribute_embedder = tx.modules.WordEmbedder(
-        vocab_size=attribute_vocab.size, hparams=config_model.attribute_embedder)
-    value_vocab = data.vocab('value')
-    value_embedder = tx.modules.WordEmbedder(
-        vocab_size=value_vocab.size, hparams=config_model.value_embedder)
+    embedders = {
+        name: tx.modules.WordEmbedder(
+            vocab_size=data.vocab(name).size, hparams=hparams)
+        for name, hparams in config_model.embedders.items()}
 
     # encoders
     sent_encoder = tx.modules.BidirectionalRNNEncoder(
         hparams=config_model.sent_encoder)
-    structured_data_encoder = tx.modules.BidirectionalRNNEncoder(
+    sd_encoder = tx.modules.BidirectionalRNNEncoder(
         hparams=config_model.sd_encoder)
 
 
@@ -74,87 +70,105 @@ def build_model(data_batch, data):
         return tf.concat(outputs, -1)
 
 
-    # X & Y
-    sents = data_batch['sent_text_ids'][:, :-1]
-    entries = data_batch['entry_text_ids'][:, 1:-1]
-    attributes = data_batch['attribute_text_ids'][:, 1:-1]
-    values = data_batch['value_text_ids'][:, 1:-1]
-    sent_embeds = sent_embedder(sents)  # [batch_size, num_steps, hidden_size]
-    structured_data_embeds = tf.concat(
-        [entry_embedder(entries),
-         attribute_embedder(attributes),
-         value_embedder(values)],
-        axis=-1)  # [batch_size, tup_nums, hidden_size]
-    sent_enc_outputs, _ = sent_encoder(sent_embeds)
-    sent_enc_outputs = concat_encoder_outputs(
-        sent_enc_outputs)
-    structured_data_enc_outputs, _ = structured_data_encoder(
-        structured_data_embeds)
-    structured_data_enc_outputs = concat_encoder_outputs(
-        structured_data_enc_outputs)
+    sd_fields = ['entry', 'attribute', 'value']
 
-    # X' & Y'
-    tplt_sents = data_batch['sent_ref_text_ids'][:, :-1]
-    tplt_entries = data_batch['entry_ref_text_ids'][:, 1:-1]
-    tplt_attributes = data_batch['attribute_ref_text_ids'][:, 1:-1]
-    tplt_values = data_batch['value_ref_text_ids'][:, 1:-1]
-    tplt_sent_embeds = sent_embedder(tplt_sents)  # [batch_size, num_steps, hidden_size]
-    tplt_structured_data_embeds = tf.concat(
-        [entry_embedder(tplt_entries),
-         attribute_embedder(tplt_attributes),
-         value_embedder(tplt_values)],
-        axis=-1)
-    tplt_sent_enc_outputs, _ = sent_encoder(tplt_sent_embeds)
-    tplt_sent_enc_outputs = concat_encoder_outputs(
-        tplt_sent_enc_outputs)
-    tplt_structured_data_enc_outputs, _ = structured_data_encoder(
-        tplt_structured_data_embeds)
-    tplt_structured_data_enc_outputs = concat_encoder_outputs(
-        tplt_structured_data_enc_outputs)
+
+    def encode(ref_str):
+        sent_ids = data_batch['sent{}_text_ids'.format(ref_str)][:, :-1]
+        sent_embeds = embedders['sent'](sent_ids)
+        sent_enc_outputs, _ = sent_encoder(sent_embeds)
+        sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
+
+        sd_ids = {
+            field: data_batch['{}{}_text_ids'.format(field, ref_str)][:, 1:-1]
+            for field in sd_fields}
+        sd_embeds = tf.concat(
+            [embedders[field](sd_ids[field]) for field in sd_fields],
+            axis=-1)
+        sd_enc_outputs, _ = sd_encoder(sd_embeds)
+        sd_enc_outputs = concat_encoder_outputs(sd_enc_outputs)
+
+        return sent_ids, sent_embeds, sent_enc_outputs, \
+            sd_ids, sd_embeds, sd_enc_outputs
+
+
+    sent_ids, sent_embeds, sent_enc_outputs, sd_ids, sd_embeds, sd_enc_outputs \
+        = ([None, None] for _ in range(6))
+
+    ref_strs = ['', '_ref']
+    for ref_flag, ref_str in enumerate(ref_strs):
+        sent_ids[ref_flag], sent_embeds[ref_flag], sent_enc_outputs[ref_flag], \
+            sd_ids[ref_flag], sd_embeds[ref_flag], sd_enc_outputs[ref_flag] = \
+            encode(ref_str)
 
     # get rnn cell
     rnn_cell = tx.core.layers.get_rnn_cell(config_model.rnn_cell)
-    cell = rnn_cell
-    decoder_params = {
-        'cell': cell,
-        'vocab_size': sent_vocab.size,
-    }
 
-    if FLAGS.copynet: # copynet
-        cell = CopyNetWrapper(
-            cell=cell,
-            template_encoder_states=tplt_sent_enc_outputs,
-            template_encoder_input_ids=tplt_sents,
-            structured_data_encoder_states=structured_data_enc_outputs,
-            structured_data_encoder_input_ids=entries,
-            vocab_size=sent_vocab.size,
-            input_ids=sents)
+
+    def teacher_forcing(cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
+                        loss_name):
         decoder_params = {
             'cell': cell,
-            'output_layer': tf.identity,
+            'vocab_size': vocab.size,
         }
 
-    decoder_params['hparams'] = config_model.decoder
+        if FLAGS.copynet: # copynet
+            cell = CopyNetWrapper(
+                cell=cell,
+                tplt_encoder_states=sent_enc_outputs[tplt_ref_flag],
+                tplt_encoder_input_ids=sent_ids[tplt_ref_flag],
+                sd_encoder_states=sd_enc_outputs[sd_ref_flag],
+                sd_encoder_input_ids=sd_ids[sd_ref_flag]['entry'],
+                vocab_size=vocab.size,
+                input_ids=sent_ids[tgt_ref_flag])
+            decoder_params = {
+                'cell': cell,
+                'output_layer': tf.identity,
+            }
 
-    if FLAGS.attn: # attention
-        decoder_params['hparams'] = config_model.attention_decoder
-        memory = tf.concat(
-            [tplt_sent_enc_outputs, structured_data_enc_outputs],
-            axis=1)
-        decoder = tx.modules.AttentionRNNDecoder(
-            memory=memory,
-            memory_sequence_length=tf.ones(
-                [tf.shape(memory)[0]], dtype=tf.int32) * tf.shape(memory)[1],
-            **decoder_params)
+        decoder_params['hparams'] = config_model.decoder
+
+        if FLAGS.attn: # attention
+            decoder_params['hparams'] = config_model.attention_decoder
+            memory = tf.concat(
+                [sent_enc_outputs[tplt_ref_flag], sd_enc_outputs[sd_ref_flag]],
+                axis=1)
+            decoder = tx.modules.AttentionRNNDecoder(
+                memory=memory,
+                memory_sequence_length=tf.ones(
+                    [tf.shape(memory)[0]], dtype=tf.int32) * tf.shape(memory)[1],
+                **decoder_params)
+        else:
+            decoder = tx.modules.BasicRNNDecoder(
+                **decoder_params)
+
+        # teacher-forcing training
+        tgt_str = 'sent{}'.format(ref_strs[tgt_ref_flag])
+        sequence_length = data_batch['{}_length'.format(tgt_str)] - 1
+        tf_outputs, _, _ = decoder(
+            decoding_strategy='train_greedy',
+            inputs=sent_embeds[tgt_ref_flag],
+            sequence_length=sequence_length)
+
+        loss = tx.losses.sequence_sparse_softmax_cross_entropy(
+            labels=data_batch['{}_text_ids'.format(tgt_str)][:, 1:],
+            logits=tf_outputs.logits,
+            sequence_length=sequence_length)
+        losses[loss_name] = loss
+
+        return decoder, tf_outputs, loss
+
+
+    decoder, _, loss = teacher_forcing(rnn_cell, 1, 0, 0, 'MLE')
+    rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 1, 'REC')
+    if config_train.rec_weight == 0:
+        joint_loss = loss
+    elif config_train.rec_weight == 1:
+        joint_loss = rec_loss
     else:
-        decoder = tx.modules.BasicRNNDecoder(
-            **decoder_params)
-
-    # teacher-forcing training
-    tf_outputs, _, _ = decoder(
-        decoding_strategy='train_greedy',
-        inputs=sent_embeds,
-        sequence_length=data_batch['sent_length'] - 1)
+        joint_loss = (1 - config_train.rec_weight) * loss \
+                   + config_train.rec_weight * rec_loss
+    losses['joint'] = joint_loss
 
     # beam-search inference
     infer_beam_width = config_train.infer_beam_width
@@ -164,47 +178,37 @@ def build_model(data_batch, data):
     if FLAGS.copynet:
         tiled_cell = CopyNetWrapper(
             cell=rnn_cell,
-            template_encoder_states=tile_batch(
-                tplt_sent_enc_outputs, infer_beam_width),
-            template_encoder_input_ids=tile_batch(
-                tplt_sents, infer_beam_width),
-            structured_data_encoder_states=tile_batch(
-                structured_data_enc_outputs, infer_beam_width),
-            structured_data_encoder_input_ids=tile_batch(
-                entries, infer_beam_width),
-            vocab_size=sent_vocab.size,
-            input_ids=sents)
+            tplt_encoder_states=tile_batch(
+                sent_enc_outputs[1], infer_beam_width),
+            tplt_encoder_input_ids=tile_batch(
+                sent_ids[1], infer_beam_width),
+            sd_encoder_states=tile_batch(
+                sd_enc_outputs[0], infer_beam_width),
+            sd_encoder_input_ids=tile_batch(
+                sd_ids[0]['entry'], infer_beam_width),
+            vocab_size=vocab.size,
+            input_ids=sent_ids[0])
         tiled_decoder = tx.modules.BasicRNNDecoder(
             cell=tiled_cell,
             output_layer=tf.identity,
             hparams=config_model.decoder)
 
-    start_tokens = tf.ones_like(data_batch['sent_length']) * \
-        data.vocab('sent').bos_token_id
-    end_token = data.vocab('sent').eos_token_id
+    start_tokens = tf.ones_like(data_batch['sent_length']) * vocab.bos_token_id
+    end_token = vocab.eos_token_id
 
     bs_outputs, _, _ = tx.modules.beam_search_decode(
         decoder_or_cell=tiled_decoder,
-        embedding=sent_embedder,
+        embedding=embedders['sent'],
         start_tokens=start_tokens,
         end_token=end_token,
         beam_width=config_train.infer_beam_width,
         max_decoding_length=config_train.infer_max_decoding_length)
 
-    # losses
-    losses = {}
-
-    # MLE loss
-    losses['MLE'] = tx.losses.sequence_sparse_softmax_cross_entropy(
-        labels=data_batch['sent_text_ids'][:, 1:],
-        logits=tf_outputs.logits,
-        sequence_length=data_batch['sent_length'] - 1)
-
     train_ops = {
-        name: get_train_op(loss, hparams=config_train.train[name])
-        for name, loss in losses.items()}
+        name: get_train_op(losses[name], hparams=config_train.train[name])
+        for name in config_train.train}
 
-    return train_ops, tf_outputs, bs_outputs
+    return train_ops, bs_outputs
 
 
 def main():
@@ -216,7 +220,7 @@ def main():
 
     global_step = tf.train.get_or_create_global_step()
 
-    train_ops, tf_outputs, bs_outputs = build_model(
+    train_ops, bs_outputs = build_model(
         data_batch, datasets['train'])
 
     summary_ops = {
@@ -363,7 +367,7 @@ def main():
 
         epoch = 0
         while epoch < config_train.max_epochs:
-            name = 'MLE'
+            name = 'joint'
             train_op = train_ops[name]
             summary_op = summary_ops[name]
 
