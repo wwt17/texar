@@ -28,10 +28,11 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             template_encoder_states, template_encoder_input_ids,
             structured_data_encoder_states, structured_data_encoder_input_ids,
             vocab_size, input_ids,
-            encoder_state_size=None, initial_cell_state=None, name=None):
+            encoder_state_size=None, initial_cell_state=None,
+            reuse=tf.AUTO_REUSE, name=None):
         super(CopyNetWrapper, self).__init__(name=name)
 
-        with tf.variable_scope("CopyNetWrapper", reuse=tf.AUTO_REUSE):
+        with tf.variable_scope("CopyNetWrapper", reuse=reuse):
             self._cell = cell
             self._vocab_size = vocab_size
             self._input_ids = input_ids

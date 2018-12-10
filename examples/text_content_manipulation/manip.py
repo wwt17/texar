@@ -55,13 +55,13 @@ def build_model(data_batch, data):
         vocab_size=sent_vocab.size, hparams=config_model.sent_embedder)
     entry_vocab = data.vocab('entry')
     entry_embedder = tx.modules.WordEmbedder(
-        vocab_size=entry_vocab.size, hparams=config_model.sd_embedder)
+        vocab_size=entry_vocab.size, hparams=config_model.entry_embedder)
     attribute_vocab = data.vocab('attribute')
     attribute_embedder = tx.modules.WordEmbedder(
-        vocab_size=attribute_vocab.size, hparams=config_model.sd_embedder)
-    value_vocab = data.vocab('entry')
+        vocab_size=attribute_vocab.size, hparams=config_model.attribute_embedder)
+    value_vocab = data.vocab('value')
     value_embedder = tx.modules.WordEmbedder(
-        vocab_size=value_vocab.size, hparams=config_model.sd_embedder)
+        vocab_size=value_vocab.size, hparams=config_model.value_embedder)
 
     # encoders
     sent_encoder = tx.modules.BidirectionalRNNEncoder(

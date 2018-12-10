@@ -1,35 +1,32 @@
-structured_emb_size = 128
-hidden_size = structured_emb_size * 3
+dim = 384
 
-sent_embedder = {
-    'name': 'sent_embedder',
-    'dim': hidden_size,
-    'initializer': {
-        'type': 'random_normal_initializer',
-        'kwargs': {
-            'mean': 0.0,
-            'stddev': hidden_size**-0.5,
-        },
-    }
-}
 
-sd_embedder = {
-    'name': 'sd_embedder',
-    'dim': structured_emb_size,
-    'initializer': {
-        'type': 'random_normal_initializer',
-        'kwargs': {
-            'mean': 0.0,
-            'stddev': structured_emb_size**-0.5,
-        },
+def get_embedder_hparams(dim, name):
+    return {
+        'name': name,
+        'dim': dim,
+        'initializer': {
+            'type': 'random_normal_initializer',
+            'kwargs': {
+                'mean': 0.0,
+                'stddev': dim ** -0.5,
+            },
+        }
     }
-}
+
+
+sent_embedder, entry_embedder, attribute_embedder, value_embedder = (
+    get_embedder_hparams(dim, name) for name, dim in
+     (('sent_embedder', dim),
+      ('entry_embedder', dim / 2),
+      ('attribute_embedder', dim / 8),
+      ('value_embedder', dim / 8 * 3)))
 
 sent_encoder = {
     'name': 'sent_encoder',
     'rnn_cell_fw': {
         'kwargs': {
-            'num_units': hidden_size
+            'num_units': dim
         }
     }
 }
@@ -38,7 +35,7 @@ sd_encoder = {
     'name': 'sd_encoder',
     'rnn_cell_fw': {
         'kwargs': {
-            'num_units': hidden_size
+            'num_units': dim
         }
     }
 }
@@ -46,7 +43,7 @@ sd_encoder = {
 rnn_cell = {
     'type': 'LSTMBlockCell',
     'kwargs': {
-        'num_units': hidden_size,
+        'num_units': dim,
         'forget_bias': 0.
     },
     'dropout': {
@@ -65,7 +62,7 @@ attention_decoder = {
     'attention': {
         'type': 'LuongAttention',
         'kwargs': {
-            'num_units': hidden_size,
+            'num_units': dim,
         }
     }
 }
