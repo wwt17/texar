@@ -7,14 +7,15 @@ f = '{}:{}'.format
 cluster = {
     'ps': [
         f(h2, 40000),
+        f(daoyuan, 40000),
     ],
     'worker': [
         f(h2, 50000),
-        f(hserver, 50000),
-        f(hserver, 50001),
-        f(xiaodan, 50000),
-        f(xiaodan, 50001),
+        #f(hserver, 50000),
+        #f(hserver, 50001),
+        #f(xiaodan, 50000),
+        #f(xiaodan, 50001),
         f(daoyuan, 50000),
-        f(daoyuan, 50001),
+        #f(daoyuan, 50001),
     ],
 }
