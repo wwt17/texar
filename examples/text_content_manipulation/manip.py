@@ -11,6 +11,7 @@ from __future__ import print_function
 
 import importlib
 import os
+import numpy as np
 import tensorflow as tf
 import texar as tx
 from copy_net import CopyNetWrapper
@@ -49,6 +50,27 @@ def build_model(data_batch, data):
     batch_size, num_steps = [
         tf.shape(data_batch["value_text_ids"])[d] for d in range(2)]
     vocab = data.vocab('sent')
+
+
+    id2str = '<{}>'.format
+    bos_str, eos_str = map(id2str, (vocab.bos_token_id, vocab.eos_token_id))
+
+    def single_bleu(ref, hypo):
+        ref = [id2str(u if u != vocab.unk_token_id else -1) for u in ref]
+        hypo = [id2str(u) for u in hypo]
+
+        ref = tx.utils.strip_special_tokens(
+            ' '.join(ref), strip_bos=bos_str, strip_eos=eos_str)
+        hypo = tx.utils.strip_special_tokens(
+            ' '.join(hypo), strip_eos=eos_str)
+
+        return 0.01 * tx.evals.sentence_bleu(references=[ref], hypothesis=hypo)
+
+    def batch_bleu(refs, hypos):
+        return np.array(
+            [single_bleu(ref, hypo) for ref, hypo in zip(refs, hypos)],
+            dtype=np.float32)
+
 
     # losses
     losses = {}
@@ -150,10 +172,19 @@ def build_model(data_batch, data):
             inputs=sent_embeds[tgt_ref_flag],
             sequence_length=sequence_length)
 
+        tgt_sent_ids = data_batch['{}_text_ids'.format(tgt_str)][:, 1:]
         loss = tx.losses.sequence_sparse_softmax_cross_entropy(
-            labels=data_batch['{}_text_ids'.format(tgt_str)][:, 1:],
+            labels=tgt_sent_ids,
             logits=tf_outputs.logits,
-            sequence_length=sequence_length)
+            sequence_length=sequence_length,
+            average_across_batch=False)
+        if config_train.add_bleu_weight and tplt_ref_flag != tgt_ref_flag:
+            w = tf.py_func(
+                batch_bleu, [sent_ids[tplt_ref_flag], tgt_sent_ids],
+                tf.float32, stateful=False, name='W_BLEU')
+            w.set_shape(loss.get_shape())
+            loss = w * loss
+        loss = tf.reduce_mean(loss, 0)
         losses[loss_name] = loss
 
         return decoder, tf_outputs, loss
@@ -301,7 +332,7 @@ def main():
 
         ref_hypo_pairs = []
         fetches = [
-            data_batch['sent_text'],
+            [data_batch['sent_text'], data_batch['sent_ref_text']],
             bs_outputs.predicted_ids,
         ]
 
@@ -309,18 +340,23 @@ def main():
         while True:
             try:
                 target_texts, output_ids = sess.run(fetches, feed_dict)
-                target_texts = target_texts[:, 1:]
+                target_texts = [
+                    tx.utils.strip_special_tokens(
+                        texts[:, 1:].tolist(), is_token_list=True)
+                    for texts in target_texts]
                 output_ids = output_ids[:, :, 0]
-                target_texts = tx.utils.strip_special_tokens(
-                    target_texts.tolist(), is_token_list=True)
                 output_texts = tx.utils.map_ids_to_strs(
                     ids=output_ids.tolist(), vocab=datasets[mode].vocab('sent'),
                     join=False)
 
+                target_texts = list(zip(*target_texts))
+
                 for ref, hypo in zip(target_texts, output_texts):
                     if cnt < 10:
-                        print('ref {}: {}'.format(cnt, ' '.join(ref)))
-                        print('hyp {}: {}'.format(cnt, ' '.join(hypo)))
+                        print('cnt = {}'.format(cnt))
+                        for i, s in enumerate(ref):
+                            print('ref{}: {}'.format(i, ' '.join(s)))
+                        print('hypo: {}'.format(' '.join(hypo)))
                     cnt += 1
                 print('processed {} samples'.format(cnt))
 
@@ -330,17 +366,25 @@ def main():
                 break
 
         refs, hypos = zip(*ref_hypo_pairs)
-        refs = list(map(lambda x: [x], refs))
-        bleu = corpus_bleu(refs, hypos)
-        print('{} BLEU: {:.2f}'.format(mode, bleu))
+        bleus = []
+        get_bleu_name = '{}_BLEU'.format
+        print('In {} mode:'.format(mode))
+        for i in range(len(fetches[0])):
+            refs_ = list(map(lambda ref: ref[i:i+1], refs))
+            bleu = corpus_bleu(refs_, hypos)
+            print('{}: {:.2f}'.format(get_bleu_name(i), bleu))
+            bleus.append(bleu)
 
         step = tf.train.global_step(sess, global_step)
 
         summary = tf.Summary()
-        summary.value.add(tag='{}/BLEU'.format(mode), simple_value=bleu)
+        for i, bleu in enumerate(bleus):
+            summary.value.add(
+                tag='{}/{}'.format(mode, get_bleu_name(i)), simple_value=bleu)
         summary_writer.add_summary(summary, step)
         summary_writer.flush()
 
+        bleu = bleus[1]
         if mode == 'val':
             if bleu > best_ever_val_bleu:
                 best_ever_val_bleu = bleu
