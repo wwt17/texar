@@ -59,7 +59,7 @@ decoder = {
 }
 
 attention_decoder = {
-    'name': 'decoder',
+    'name': 'attention_decoder',
     'attention': {
         'type': 'LuongAttention',
         'kwargs': {

@@ -31,8 +31,6 @@ flags.DEFINE_boolean("copynet", False, "Whether to use copynet.")
 flags.DEFINE_boolean("attn", False, "Whether to use attention.")
 FLAGS = flags.FLAGS
 
-assert not (FLAGS.copynet and FLAGS.attn)
-
 config_data = importlib.import_module(FLAGS.config_data)
 config_model = importlib.import_module(FLAGS.config_model)
 config_train = importlib.import_module(FLAGS.config_train)
@@ -127,50 +125,73 @@ def build_model(data_batch, data):
     rnn_cell = tx.core.layers.get_rnn_cell(config_model.rnn_cell)
 
 
-    def teacher_forcing(cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
-                        loss_name):
-        decoder_params = {
-            'cell': cell,
-            'vocab_size': vocab.size,
-        }
-
-        if FLAGS.copynet: # copynet
-            cell = CopyNetWrapper(
-                cell=cell,
-                tplt_encoder_states=sent_enc_outputs[tplt_ref_flag],
-                tplt_encoder_input_ids=sent_ids[tplt_ref_flag],
-                sd_encoder_states=sd_enc_outputs[sd_ref_flag],
-                sd_encoder_input_ids=sd_ids[sd_ref_flag]['entry'],
-                vocab_size=vocab.size,
-                input_ids=sent_ids[tgt_ref_flag])
-            decoder_params = {
-                'cell': cell,
-                'output_layer': tf.identity,
-            }
-
-        decoder_params['hparams'] = config_model.decoder
+    def get_decoder(cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
+                    beam_width=None):
+        output_layer_params = \
+            {'output_layer': tf.identity} if FLAGS.copynet else \
+            {'vocab_size': vocab.size}
 
         if FLAGS.attn: # attention
-            decoder_params['hparams'] = config_model.attention_decoder
             memory = tf.concat(
-                [sent_enc_outputs[tplt_ref_flag], sd_enc_outputs[sd_ref_flag]],
+                [sent_enc_outputs[tplt_ref_flag],
+                 sd_enc_outputs[sd_ref_flag]],
                 axis=1)
-            decoder = tx.modules.AttentionRNNDecoder(
+            attention_decoder = tx.modules.AttentionRNNDecoder(
+                cell=cell,
                 memory=memory,
-                memory_sequence_length=tf.ones(
-                    [tf.shape(memory)[0]], dtype=tf.int32) * tf.shape(memory)[1],
-                **decoder_params)
-        else:
-            decoder = tx.modules.BasicRNNDecoder(
-                **decoder_params)
+                hparams=config_model.attention_decoder,
+                **output_layer_params)
+            if not FLAGS.copynet:
+                return attention_decoder
+            cell = attention_decoder.cell if beam_width is None else \
+                   attention_decoder._get_beam_search_cell(beam_width)
 
-        # teacher-forcing training
+        if FLAGS.copynet: # copynet
+            kwargs = {
+                'tplt_encoder_states': sent_enc_outputs[tplt_ref_flag],
+                'tplt_encoder_input_ids': sent_ids[tplt_ref_flag],
+                'sd_encoder_states': sd_enc_outputs[sd_ref_flag],
+                'sd_encoder_input_ids': sd_ids[sd_ref_flag]['entry'],
+                'input_ids': sent_ids[tgt_ref_flag]}
+            if beam_width is not None:
+                kwargs = {
+                    name: tile_batch(value, beam_width)
+                    for name, value in kwargs.items()}
+            cell = CopyNetWrapper(
+                cell=cell, vocab_size=vocab.size, **kwargs)
+
+        decoder = tx.modules.BasicRNNDecoder(
+            cell=cell, hparams=config_model.decoder,
+            **output_layer_params)
+        return decoder
+
+    def get_decoder_and_outputs(
+            cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag, params,
+            beam_width=None):
+        decoder = get_decoder(
+            cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
+            beam_width=beam_width)
+        if beam_width is None:
+            ret = decoder(**params)
+        else:
+            ret = tx.modules.beam_search_decode(
+                decoder_or_cell=decoder,
+                beam_width=beam_width,
+                **params)
+        return (decoder,) + ret
+
+    get_decoder_and_outputs = tf.make_template(
+        'get_decoder_and_outputs', get_decoder_and_outputs)
+
+    def teacher_forcing(cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
+                        loss_name):
         tgt_str = 'sent{}'.format(ref_strs[tgt_ref_flag])
         sequence_length = data_batch['{}_length'.format(tgt_str)] - 1
-        tf_outputs, _, _ = decoder(
-            decoding_strategy='train_greedy',
-            inputs=sent_embeds[tgt_ref_flag],
-            sequence_length=sequence_length)
+        decoder, tf_outputs, _, _ = get_decoder_and_outputs(
+            cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
+            {'decoding_strategy': 'train_greedy',
+             'inputs': sent_embeds[tgt_ref_flag],
+             'sequence_length': sequence_length})
 
         tgt_sent_ids = data_batch['{}_text_ids'.format(tgt_str)][:, 1:]
         loss = tx.losses.sequence_sparse_softmax_cross_entropy(
@@ -190,6 +211,21 @@ def build_model(data_batch, data):
         return decoder, tf_outputs, loss
 
 
+    def beam_searching(cell, tplt_ref_flag, sd_ref_flag, beam_width):
+        start_tokens = tf.ones_like(data_batch['sent_length']) * vocab.bos_token_id
+        end_token = vocab.eos_token_id
+
+        decoder, bs_outputs, _, _ = get_decoder_and_outputs(
+            cell, tplt_ref_flag, sd_ref_flag, 0,
+            {'embedding': embedders['sent'],
+             'start_tokens': start_tokens,
+             'end_token': end_token,
+             'max_decoding_length': config_train.infer_max_decoding_length},
+            beam_width=config_train.infer_beam_width)
+
+        return decoder, bs_outputs
+
+
     decoder, _, loss = teacher_forcing(rnn_cell, 1, 0, 0, 'MLE')
     rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 1, 'REC')
     if config_train.rec_weight == 0:
@@ -202,38 +238,8 @@ def build_model(data_batch, data):
     losses['joint'] = joint_loss
 
     # beam-search inference
-    infer_beam_width = config_train.infer_beam_width
-    tiled_cell = rnn_cell
-    tiled_decoder = decoder
-
-    if FLAGS.copynet:
-        tiled_cell = CopyNetWrapper(
-            cell=rnn_cell,
-            tplt_encoder_states=tile_batch(
-                sent_enc_outputs[1], infer_beam_width),
-            tplt_encoder_input_ids=tile_batch(
-                sent_ids[1], infer_beam_width),
-            sd_encoder_states=tile_batch(
-                sd_enc_outputs[0], infer_beam_width),
-            sd_encoder_input_ids=tile_batch(
-                sd_ids[0]['entry'], infer_beam_width),
-            vocab_size=vocab.size,
-            input_ids=sent_ids[0])
-        tiled_decoder = tx.modules.BasicRNNDecoder(
-            cell=tiled_cell,
-            output_layer=tf.identity,
-            hparams=config_model.decoder)
-
-    start_tokens = tf.ones_like(data_batch['sent_length']) * vocab.bos_token_id
-    end_token = vocab.eos_token_id
-
-    bs_outputs, _, _ = tx.modules.beam_search_decode(
-        decoder_or_cell=tiled_decoder,
-        embedding=embedders['sent'],
-        start_tokens=start_tokens,
-        end_token=end_token,
-        beam_width=config_train.infer_beam_width,
-        max_decoding_length=config_train.infer_max_decoding_length)
+    tiled_decoder, bs_outputs = beam_searching(
+        rnn_cell, 1, 0, config_train.infer_beam_width)
 
     train_ops = {
         name: get_train_op(losses[name], hparams=config_train.train[name])
