@@ -50,15 +50,17 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self._encoder_state_size = encoder_state_size
 
             self._initial_cell_state = initial_cell_state
-            self._tplt_copy_weight = tf.get_variable(
-                'TemplateCopyWeight',
-                [self._encoder_state_size, self._cell.output_size])
-            self._sd_copy_weight = tf.get_variable(
-                'StructuredDataCopyWeight',
-                [self._encoder_state_size, self._cell.output_size])
-            self._projection = tf.get_variable(
-                'OutputProjectionWeight',
-                [self._cell.output_size, self._vocab_size])
+            self._tplt_copy_states = tf.layers.dense(
+                self._tplt_encoder_states,
+                units=self._cell.output_size,
+                activation=tf.nn.tanh,
+                use_bias=False)
+            self._sd_copy_states = tf.layers.dense(
+                self._sd_encoder_states,
+                units=self._cell.output_size,
+                activation=tf.nn.tanh,
+                use_bias=False)
+            self._projection = tf.layers.Dense(self._vocab_size, use_bias=False)
 
     def __call__(self, inputs, state, scope=None):
         if not isinstance(state, CopyNetWrapperState):
@@ -98,32 +100,24 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
 
         # generate mode
         outputs, cell_state = self._cell(inputs, cell_state, scope)
-        generate_score = tf.matmul(outputs, self._projection)  # [batch, gen_vocab_size]
+        generate_score = self._projection(outputs)  # [batch, gen_vocab_size]
         generate_score = tf.cast(generate_score, tf.float64)
         exp_generate_score = tf.exp(generate_score)
         sumexp_generate_score = tf.reduce_sum(exp_generate_score, 1)
 
         # copy from template
-        tplt_copy_score = tf.nn.tanh(tf.einsum(
-            "ijk,km->ijm",
-            self._tplt_encoder_states,
-            self._tplt_copy_weight))  # [batch, num_steps, m]
         tplt_copy_score = tf.einsum(
             "ijm,im->ij",
-            tplt_copy_score,
+            self._tplt_copy_states,
             outputs)  # [batch, num_steps]
         tplt_copy_score = tf.cast(tplt_copy_score, tf.float64)
         exp_tplt_copy_score = tf.exp(tplt_copy_score)
         sumexp_tplt_copy_score = tf.reduce_sum(exp_tplt_copy_score, 1)
 
         # copy from structured data
-        sd_copy_score = tf.nn.tanh(tf.einsum(
-            "ijk,km->ijm",
-            self._sd_encoder_states,
-            self._sd_copy_weight))  # [batch, num_steps, m]
         sd_copy_score = tf.einsum(
             "ijm,im->ij",
-            sd_copy_score,
+            self._sd_copy_states,
             outputs)  # [batch, num_steps]
         sd_copy_score = tf.cast(sd_copy_score, tf.float64)
         exp_sd_copy_score = tf.exp(sd_copy_score)
