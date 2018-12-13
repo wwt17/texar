@@ -148,17 +148,22 @@ def build_model(data_batch, data):
 
         if FLAGS.copynet: # copynet
             kwargs = {
-                'tplt_encoder_states': sent_enc_outputs[tplt_ref_flag],
                 'tplt_encoder_input_ids': sent_ids[tplt_ref_flag],
-                'sd_encoder_states': sd_enc_outputs[sd_ref_flag],
+                'tplt_encoder_states': sent_enc_outputs[tplt_ref_flag],
                 'sd_encoder_input_ids': sd_ids[sd_ref_flag]['entry'],
+                'sd_encoder_states': sd_enc_outputs[sd_ref_flag],
                 'input_ids': sent_ids[tgt_ref_flag]}
             if beam_width is not None:
                 kwargs = {
                     name: tile_batch(value, beam_width)
                     for name, value in kwargs.items()}
             cell = CopyNetWrapper(
-                cell=cell, vocab_size=vocab.size, **kwargs)
+                cell=cell, vocab_size=vocab.size,
+                memory_ids_states=[
+                    (kwargs['{}_encoder_input_ids'.format(t)],
+                     kwargs['{}_encoder_states'.format(t)])
+                    for t in ['tplt', 'sd']],
+                input_ids=kwargs['input_ids'])
 
         decoder = tx.modules.BasicRNNDecoder(
             cell=cell, hparams=config_model.decoder,
