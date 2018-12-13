@@ -157,13 +157,29 @@ def build_model(data_batch, data):
                 kwargs = {
                     name: tile_batch(value, beam_width)
                     for name, value in kwargs.items()}
+
+            def get_get_copy_scores(memory_ids_states, output_size):
+                memory_copy_states = [
+                    tf.layers.dense(
+                        memory_states,
+                        units=output_size,
+                        activation=tf.nn.tanh,
+                        use_bias=False)
+                    for _, memory_states in memory_ids_states]
+                def get_copy_scores(outputs):
+                    return [
+                        tf.einsum("ijm,im->ij", memory_copy_state, outputs)
+                        for memory_copy_state in memory_copy_states]
+                return get_copy_scores
+
             cell = CopyNetWrapper(
                 cell=cell, vocab_size=vocab.size,
                 memory_ids_states=[
                     (kwargs['{}_encoder_input_ids'.format(t)],
                      kwargs['{}_encoder_states'.format(t)])
                     for t in ['tplt', 'sd']],
-                input_ids=kwargs['input_ids'])
+                input_ids=kwargs['input_ids'],
+                get_get_copy_scores=get_get_copy_scores)
 
         decoder = tx.modules.BasicRNNDecoder(
             cell=cell, hparams=config_model.decoder,
