@@ -390,7 +390,7 @@ def main():
         summary_writer.add_summary(summary, step)
         summary_writer.flush()
 
-        bleu = bleus[1]
+        bleu = bleus[0]
         if mode == 'val':
             if bleu > best_ever_val_bleu:
                 best_ever_val_bleu = bleu
