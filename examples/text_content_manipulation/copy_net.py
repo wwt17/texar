@@ -27,8 +27,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self, cell,
             tplt_encoder_states, tplt_encoder_input_ids,
             sd_encoder_states, sd_encoder_input_ids,
-            vocab_size, input_ids,
-            encoder_state_size=None, initial_cell_state=None,
+            vocab_size, input_ids, initial_cell_state=None,
             reuse=tf.AUTO_REUSE, name=None):
         super(CopyNetWrapper, self).__init__(name=name)
 
@@ -41,13 +40,6 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self._tplt_encoder_states = tplt_encoder_states  # refer to h in the paper
             self._sd_encoder_input_ids = sd_encoder_input_ids
             self._sd_encoder_states = sd_encoder_states
-
-            if encoder_state_size is None:
-                encoder_state_size = self._tplt_encoder_states.shape[-1].value
-                if encoder_state_size is None:
-                    raise ValueError("encoder_state_size must be set if we can't "
-                                     "infer encoder_states last dimension size.")
-            self._encoder_state_size = encoder_state_size
 
             self._initial_cell_state = initial_cell_state
             self._tplt_copy_states = tf.layers.dense(
@@ -168,8 +160,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             cell_state=self._cell.state_size,
             time=tf.TensorShape([]),
             last_ids=tf.TensorShape([]),
-            prob_tplt=self._encoder_state_size,
-            prob_sd=self._encoder_state_size)
+            prob_tplt=tf.shape(self._tplt_encoder_input_ids)[1],
+            prob_sd=tf.shape(self._sd_encoder_input_ids)[1])
 
     @property
     def output_size(self):
