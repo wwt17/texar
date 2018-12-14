@@ -96,7 +96,9 @@ def build_model(data_batch, data):
     def encode(ref_str):
         sent_ids = data_batch['sent{}_text_ids'.format(ref_str)][:, :-1]
         sent_embeds = embedders['sent'](sent_ids)
-        sent_enc_outputs, _ = sent_encoder(sent_embeds)
+        sent_sequence_length = data_batch['sent{}_length'.format(ref_str)] - 1
+        sent_enc_outputs, _ = sent_encoder(
+            sent_embeds, sequence_length=sent_sequence_length)
         sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
 
         sd_ids = {
@@ -105,21 +107,21 @@ def build_model(data_batch, data):
         sd_embeds = tf.concat(
             [embedders[field](sd_ids[field]) for field in sd_fields],
             axis=-1)
-        sd_enc_outputs, _ = sd_encoder(sd_embeds)
+        sd_sequence_length = data_batch[
+            '{}{}_length'.format(sd_fields[0], ref_str)] - 2
+        sd_enc_outputs, _ = sd_encoder(
+            sd_embeds, sequence_length=sd_sequence_length)
         sd_enc_outputs = concat_encoder_outputs(sd_enc_outputs)
 
-        return sent_ids, sent_embeds, sent_enc_outputs, \
-            sd_ids, sd_embeds, sd_enc_outputs
+        return sent_ids, sent_embeds, sent_enc_outputs, sent_sequence_length, \
+            sd_ids, sd_embeds, sd_enc_outputs, sd_sequence_length
 
-
-    sent_ids, sent_embeds, sent_enc_outputs, sd_ids, sd_embeds, sd_enc_outputs \
-        = ([None, None] for _ in range(6))
 
     ref_strs = ['', '_ref']
-    for ref_flag, ref_str in enumerate(ref_strs):
-        sent_ids[ref_flag], sent_embeds[ref_flag], sent_enc_outputs[ref_flag], \
-            sd_ids[ref_flag], sd_embeds[ref_flag], sd_enc_outputs[ref_flag] = \
-            encode(ref_str)
+    encode_results = [encode(ref_str) for ref_str in ref_strs]
+    sent_ids, sent_embeds, sent_enc_outputs, sent_sequence_length, \
+            sd_ids, sd_embeds, sd_enc_outputs, sd_sequence_length = \
+        zip(*encode_results)
 
     # get rnn cell
     rnn_cell = tx.core.layers.get_rnn_cell(config_model.rnn_cell)
@@ -134,14 +136,17 @@ def build_model(data_batch, data):
         if FLAGS.attn: # attention
             if sd_ref_flag is None:
                 memory = sent_enc_outputs[tplt_ref_flag]
+                memory_sequence_length = sent_sequence_length[tplt_ref_flag]
             else:
                 memory = tf.concat(
                     [sent_enc_outputs[tplt_ref_flag],
                      sd_enc_outputs[sd_ref_flag]],
                     axis=1)
+                memory_sequence_length = None
             attention_decoder = tx.modules.AttentionRNNDecoder(
                 cell=cell,
                 memory=memory,
+                memory_sequence_length=memory_sequence_length,
                 hparams=config_model.attention_decoder,
                 **output_layer_params)
             if not FLAGS.copynet:
@@ -155,7 +160,8 @@ def build_model(data_batch, data):
                 'tplt_encoder_states': sent_enc_outputs[tplt_ref_flag],
                 'sd_encoder_input_ids': sd_ids[sd_ref_flag]['entry'],
                 'sd_encoder_states': sd_enc_outputs[sd_ref_flag],
-                'input_ids': sent_ids[tgt_ref_flag]}
+                'input_ids': data_batch[
+                    'sent{}_text_ids'.format(ref_strs[tgt_ref_flag])][:, :-1]}
             if beam_width is not None:
                 kwargs = {
                     name: tile_batch(value, beam_width)
