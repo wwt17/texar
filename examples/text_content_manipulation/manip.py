@@ -14,6 +14,7 @@ import os
 import numpy as np
 import tensorflow as tf
 import texar as tx
+import pickle
 from copy_net import CopyNetWrapper
 from texar.core import get_train_op
 from utils import *
@@ -29,7 +30,15 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "expr_name is used.")
 flags.DEFINE_boolean("copynet", False, "Whether to use copynet.")
 flags.DEFINE_boolean("attn", False, "Whether to use attention.")
+flags.DEFINE_boolean("align", False, "Whether it is to get alignment.")
+flags.DEFINE_boolean("output_align", False, "Whether to output alignment.")
 FLAGS = flags.FLAGS
+
+if FLAGS.output_align:
+    FLAGS.align = True
+if FLAGS.align:
+    FLAGS.attn = True
+    FLAGS.copynet = False
 
 config_data = importlib.import_module(FLAGS.config_data)
 config_model = importlib.import_module(FLAGS.config_model)
@@ -159,9 +168,11 @@ def build_model(data_batch, data):
                 'tplt_encoder_input_ids': sent_ids[tplt_ref_flag],
                 'tplt_encoder_states': sent_enc_outputs[tplt_ref_flag],
                 'sd_encoder_input_ids': sd_ids[sd_ref_flag]['entry'],
-                'sd_encoder_states': sd_enc_outputs[sd_ref_flag],
+                'sd_encoder_states': sd_enc_outputs[sd_ref_flag]}
+            if tgt_ref_flag is not None:
+                kwargs.update({
                 'input_ids': data_batch[
-                    'sent{}_text_ids'.format(ref_strs[tgt_ref_flag])][:, :-1]}
+                    'sent{}_text_ids'.format(ref_strs[tgt_ref_flag])][:, :-1]})
             if beam_width is not None:
                 kwargs = {
                     name: tile_batch(value, beam_width)
@@ -187,7 +198,8 @@ def build_model(data_batch, data):
                     (kwargs['{}_encoder_input_ids'.format(t)],
                      kwargs['{}_encoder_states'.format(t)])
                     for t in ['tplt', 'sd']],
-                input_ids=kwargs['input_ids'],
+                input_ids=\
+                    kwargs['input_ids'] if tgt_ref_flag is not None else None,
                 get_get_copy_scores=get_get_copy_scores)
 
         decoder = tx.modules.BasicRNNDecoder(
@@ -242,11 +254,12 @@ def build_model(data_batch, data):
 
 
     def beam_searching(cell, tplt_ref_flag, sd_ref_flag, beam_width):
-        start_tokens = tf.ones_like(data_batch['sent_length']) * vocab.bos_token_id
+        start_tokens = tf.ones_like(data_batch['sent_length']) * \
+            vocab.bos_token_id
         end_token = vocab.eos_token_id
 
         decoder, bs_outputs, _, _ = get_decoder_and_outputs(
-            cell, tplt_ref_flag, sd_ref_flag, 0,
+            cell, tplt_ref_flag, sd_ref_flag, None,
             {'embedding': embedders['sent'],
              'start_tokens': start_tokens,
              'end_token': end_token,
@@ -256,26 +269,34 @@ def build_model(data_batch, data):
         return decoder, bs_outputs
 
 
-    decoder, _, loss = teacher_forcing(rnn_cell, 1, 0, 0, 'MLE')
-    rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 1, 'REC')
-    if config_train.rec_weight == 0:
-        joint_loss = loss
-    elif config_train.rec_weight == 1:
-        joint_loss = rec_loss
-    else:
-        joint_loss = (1 - config_train.rec_weight) * loss \
-                   + config_train.rec_weight * rec_loss
-    losses['joint'] = joint_loss
+    if FLAGS.align:
+        decoder, tf_outputs, loss = teacher_forcing(
+            rnn_cell, 1, None, 1, 'ALIGN')
+        losses['joint'] = loss
 
-    # beam-search inference
-    tiled_decoder, bs_outputs = beam_searching(
-        rnn_cell, 1, 0, config_train.infer_beam_width)
+        tiled_decoder, bs_outputs = beam_searching(
+            rnn_cell, 1, None, config_train.infer_beam_width)
+
+    else:
+        decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 0, 'MLE')
+        rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 1, 'REC')
+        if config_train.rec_weight == 0:
+            joint_loss = loss
+        elif config_train.rec_weight == 1:
+            joint_loss = rec_loss
+        else:
+            joint_loss = (1 - config_train.rec_weight) * loss \
+                       + config_train.rec_weight * rec_loss
+        losses['joint'] = joint_loss
+
+        tiled_decoder, bs_outputs = beam_searching(
+            rnn_cell, 1, 0, config_train.infer_beam_width)
 
     train_ops = {
         name: get_train_op(losses[name], hparams=config_train.train[name])
         for name in config_train.train}
 
-    return train_ops, bs_outputs
+    return train_ops, tf_outputs, bs_outputs
 
 
 def main():
@@ -287,7 +308,7 @@ def main():
 
     global_step = tf.train.get_or_create_global_step()
 
-    train_ops, bs_outputs = build_model(
+    train_ops, tf_outputs, bs_outputs = build_model(
         data_batch, datasets['train'])
 
     summary_ops = {
@@ -327,6 +348,29 @@ def main():
 
         else:
             print('cannot find checkpoint directory {}'.format(directory))
+
+
+    def _get_alignment(sess, mode):
+        print('in _get_alignment')
+
+        data_iterator.restart_dataset(sess, mode)
+        feed_dict = {
+            tx.global_mode(): tf.estimator.ModeKeys.EVAL,
+            data_iterator.handle: data_iterator.get_handle(sess, mode),
+        }
+
+        with open('align.pkl', 'wb') as out_file:
+            while True:
+                try:
+                    attention_scores = sess.run(
+                        tf_outputs.attention_scores,
+                        feed_dict)
+                    pickle.dump(attention_scores, out_file)
+
+                except tf.errors.OutOfRangeError:
+                    break
+
+        print('end _get_alignment')
 
 
     def _train_epoch(sess, summary_writer, mode, train_op, summary_op):
@@ -441,6 +485,10 @@ def main():
             _restore_from_path(restore_from)
         else:
             _restore_from(dir_model)
+
+        if FLAGS.output_align:
+            _get_alignment(sess, 'train')
+            return
 
         summary_writer = tf.summary.FileWriter(
             dir_summary, sess.graph, flush_secs=30)
