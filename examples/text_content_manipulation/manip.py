@@ -143,15 +143,21 @@ def build_model(data_batch, data):
             {'vocab_size': vocab.size}
 
         if FLAGS.attn: # attention
-            if sd_ref_flag is None:
-                memory = sent_enc_outputs[tplt_ref_flag]
-                memory_sequence_length = sent_sequence_length[tplt_ref_flag]
-            else:
+            if tplt_ref_flag is not None and sd_ref_flag is not None:
                 memory = tf.concat(
                     [sent_enc_outputs[tplt_ref_flag],
                      sd_enc_outputs[sd_ref_flag]],
                     axis=1)
                 memory_sequence_length = None
+            elif tplt_ref_flag is not None:
+                memory = sent_enc_outputs[tplt_ref_flag]
+                memory_sequence_length = sent_sequence_length[tplt_ref_flag]
+            elif sd_ref_flag is not None:
+                memory = sd_enc_outputs[sd_ref_flag]
+                memory_sequence_length = sd_sequence_length[sd_ref_flag]
+            else:
+                raise Exception(
+                    "Must specify either tplt_ref_flag or sd_ref_flag.")
             attention_decoder = tx.modules.AttentionRNNDecoder(
                 cell=cell,
                 memory=memory,
@@ -225,8 +231,8 @@ def build_model(data_batch, data):
     get_decoder_and_outputs = tf.make_template(
         'get_decoder_and_outputs', get_decoder_and_outputs)
 
-    def teacher_forcing(cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
-                        loss_name):
+    def teacher_forcing(cell, tplt_ref_flag, sd_ref_flag, loss_name):
+        tgt_ref_flag = sd_ref_flag
         tgt_str = 'sent{}'.format(ref_strs[tgt_ref_flag])
         sequence_length = data_batch['{}_length'.format(tgt_str)] - 1
         decoder, tf_outputs, _, _ = get_decoder_and_outputs(
@@ -241,7 +247,8 @@ def build_model(data_batch, data):
             logits=tf_outputs.logits,
             sequence_length=sequence_length,
             average_across_batch=False)
-        if config_train.add_bleu_weight and tplt_ref_flag != tgt_ref_flag:
+        if config_train.add_bleu_weight and tplt_ref_flag is not None \
+                and tgt_ref_flag is not None and tplt_ref_flag != tgt_ref_flag:
             w = tf.py_func(
                 batch_bleu, [sent_ids[tplt_ref_flag], tgt_sent_ids],
                 tf.float32, stateful=False, name='W_BLEU')
@@ -271,15 +278,15 @@ def build_model(data_batch, data):
 
     if FLAGS.align:
         decoder, tf_outputs, loss = teacher_forcing(
-            rnn_cell, 1, None, 1, 'ALIGN')
+            rnn_cell, None, 1, 'ALIGN')
         losses['joint'] = loss
 
         tiled_decoder, bs_outputs = beam_searching(
-            rnn_cell, 1, None, config_train.infer_beam_width)
+            rnn_cell, None, 1, config_train.infer_beam_width)
 
     else:
-        decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 0, 'MLE')
-        rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 1, 'REC')
+        decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
+        rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 'REC')
         if config_train.rec_weight == 0:
             joint_loss = loss
         elif config_train.rec_weight == 1:
