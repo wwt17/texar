@@ -24,8 +24,8 @@ class CopyNetWrapperState(collections.namedtuple(
 
 class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
     def __init__(
-            self, cell, memory_ids_states, vocab_size, input_ids,
-            get_get_copy_scores, initial_cell_state=None,
+            self, cell, memory_ids_states, vocab_size,
+            get_get_copy_scores, input_ids=None, initial_cell_state=None,
             reuse=tf.AUTO_REUSE, name=None):
         super(CopyNetWrapper, self).__init__(name=name)
 
@@ -47,10 +47,11 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                 "Expected state to be instance of CopyNetWrapperState. "
                 "Received type {} instead.".format(type(state)))
         last_ids = state.last_ids
-        last_ids = tf.cond(
-            tx.utils.is_train_mode(tx.global_mode()),
-            lambda: self._input_ids[:, state.time],
-            lambda: last_ids)
+        if self._input_ids is not None:
+            last_ids = tf.cond(
+                tx.utils.is_train_mode(tx.global_mode()),
+                lambda: self._input_ids[:, state.time],
+                lambda: last_ids)
         cell_state = state.cell_state
 
         def _get_selective_read(memory_ids, memory_states, prob):
