@@ -132,10 +132,13 @@ def build_model(data_batch, data):
             {'vocab_size': vocab.size}
 
         if FLAGS.attn: # attention
-            memory = tf.concat(
-                [sent_enc_outputs[tplt_ref_flag],
-                 sd_enc_outputs[sd_ref_flag]],
-                axis=1)
+            if sd_ref_flag is None:
+                memory = sent_enc_outputs[tplt_ref_flag]
+            else:
+                memory = tf.concat(
+                    [sent_enc_outputs[tplt_ref_flag],
+                     sd_enc_outputs[sd_ref_flag]],
+                    axis=1)
             attention_decoder = tx.modules.AttentionRNNDecoder(
                 cell=cell,
                 memory=memory,
