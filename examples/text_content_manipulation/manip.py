@@ -36,9 +36,6 @@ FLAGS = flags.FLAGS
 
 if FLAGS.output_align:
     FLAGS.align = True
-if FLAGS.align:
-    FLAGS.attn = True
-    FLAGS.copynet = False
 
 config_data = importlib.import_module(FLAGS.config_data)
 config_model = importlib.import_module(FLAGS.config_model)
@@ -51,6 +48,26 @@ dir_model = os.path.join(expr_name, 'ckpt')
 dir_best = os.path.join(expr_name, 'ckpt-best')
 ckpt_model = os.path.join(dir_model, 'model.ckpt')
 ckpt_best = os.path.join(dir_best, 'model.ckpt')
+
+
+def print_alignment(data, sent, score):
+    print(' ' * 20 + ' '.join(map('{:>12}'.format, data[0])))
+    for j, sent_token in enumerate(sent[0]):
+        print('{:>20}'.format(sent_token) + ' '.join(map(
+            lambda x: '{:12.2e}'.format(x) if x != 0 else ' ' * 12,
+            score[:, j])))
+
+
+def batch_print_alignment(datas, sents, scores):
+    datas, sents = map(
+        lambda texts_lengths: map(
+            lambda text_length:
+                (text_length[0][:text_length[1]], text_length[1]),
+            zip(*texts_lengths)),
+        (datas, sents))
+    for data, sent, score in zip(datas, sents, scores):
+        score = score[:data[1], :sent[1]]
+        print_alignment(data, sent, score)
 
 
 def build_model(data_batch, data):
@@ -276,34 +293,86 @@ def build_model(data_batch, data):
         return decoder, bs_outputs
 
 
-    if FLAGS.align:
-        decoder, tf_outputs, loss = teacher_forcing(
-            rnn_cell, None, 1, 'ALIGN')
-        losses['joint'] = loss
+    def build_align():
+        ref_str = ref_strs[1]
+        sent_str = 'sent{}'.format(ref_str)
+        sent_texts = data_batch['{}_text'.format(sent_str)][:, 1:-1]
+        sent_ids = data_batch['{}_text_ids'.format(sent_str)][:, 1:-1]
+        #TODO: Here we simply use the embedder previously constructed,
+        #therefore it's shared. We have to construct a new one here if we'd
+        #like to get align on the fly.
+        sent_embeds = embedders['sent'](sent_ids)
+        sent_sequence_length = data_batch['{}_length'.format(sent_str)] - 2
+        sent_enc_outputs, _ = sent_encoder(
+            sent_embeds, sequence_length=sent_sequence_length)
+        sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
 
-        tiled_decoder, bs_outputs = beam_searching(
-            rnn_cell, None, 1, config_train.infer_beam_width)
+        sd_field = sd_fields[0]
+        sd_str = '{}{}'.format(sd_field, ref_str)
+        sd_texts = data_batch['{}_text'.format(sd_str)][:, :-1]
+        sd_ids = data_batch['{}_text_ids'.format(sd_str)]
+        tgt_sd_ids = sd_ids[:, 1:]
+        sd_ids = sd_ids[:, :-1]
+        sd_sequence_length = data_batch['{}_length'.format(sd_str)] - 1
+        sd_embedder = embedders[sd_field]
 
+        rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
+        attention_decoder = tx.modules.AttentionRNNDecoder(
+            cell=rnn_cell,
+            memory=sent_enc_outputs,
+            memory_sequence_length=sent_sequence_length,
+            vocab_size=vocab.size,
+            hparams=config_model.align_attention_decoder)
+
+        tf_outputs, _, tf_sequence_length = attention_decoder(
+            decoding_strategy='train_greedy',
+            inputs=sd_ids,
+            embedding=sd_embedder,
+            sequence_length=sd_sequence_length)
+
+        loss = tx.losses.sequence_sparse_softmax_cross_entropy(
+            labels=tgt_sd_ids,
+            logits=tf_outputs.logits,
+            sequence_length=sd_sequence_length)
+
+        start_tokens = tf.ones_like(sd_sequence_length) * vocab.bos_token_id
+        end_token = vocab.eos_token_id
+        bs_outputs, _, _ = tx.modules.beam_search_decode(
+            decoder_or_cell=attention_decoder,
+            embedding=sd_embedder,
+            start_tokens=start_tokens,
+            end_token=end_token,
+            max_decoding_length=config_train.infer_max_decoding_length,
+            beam_width=config_train.infer_beam_width)
+
+        return (sent_texts, sent_sequence_length), (sd_texts, sd_sequence_length),\
+               loss, tf_outputs, bs_outputs
+
+
+    decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
+    rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 'REC')
+    if config_train.rec_weight == 0:
+        joint_loss = loss
+    elif config_train.rec_weight == 1:
+        joint_loss = rec_loss
     else:
-        decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
-        rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 'REC')
-        if config_train.rec_weight == 0:
-            joint_loss = loss
-        elif config_train.rec_weight == 1:
-            joint_loss = rec_loss
-        else:
-            joint_loss = (1 - config_train.rec_weight) * loss \
-                       + config_train.rec_weight * rec_loss
-        losses['joint'] = joint_loss
+        joint_loss = (1 - config_train.rec_weight) * loss \
+                   + config_train.rec_weight * rec_loss
+    losses['joint'] = joint_loss
 
-        tiled_decoder, bs_outputs = beam_searching(
-            rnn_cell, 1, 0, config_train.infer_beam_width)
+    tiled_decoder, bs_outputs = beam_searching(
+        rnn_cell, 1, 0, config_train.infer_beam_width)
+
+    align_sents, align_sds, align_loss, align_tf_outputs, align_bs_outputs = \
+        build_align()
+    losses['align'] = align_loss
 
     train_ops = {
         name: get_train_op(losses[name], hparams=config_train.train[name])
         for name in config_train.train}
 
-    return train_ops, tf_outputs, bs_outputs
+    return train_ops, bs_outputs, \
+           align_sents, align_sds, align_tf_outputs, align_bs_outputs
 
 
 def main():
@@ -315,8 +384,9 @@ def main():
 
     global_step = tf.train.get_or_create_global_step()
 
-    train_ops, tf_outputs, bs_outputs = build_model(
-        data_batch, datasets['train'])
+    train_ops, bs_outputs, \
+            align_sents, align_sds, align_tf_outputs, align_bs_outputs \
+        = build_model(data_batch, datasets['train'])
 
     summary_ops = {
         name: tf.summary.merge(
@@ -362,17 +432,20 @@ def main():
 
         data_iterator.restart_dataset(sess, mode)
         feed_dict = {
-            tx.global_mode(): tf.estimator.ModeKeys.EVAL,
+            tx.global_mode(): tf.estimator.ModeKeys.TRAIN,
             data_iterator.handle: data_iterator.get_handle(sess, mode),
         }
+
+        fetches = [
+            align_sds,
+            align_sents,
+            align_tf_outputs.attention_scores]
 
         with open('align.pkl', 'wb') as out_file:
             while True:
                 try:
-                    attention_scores = sess.run(
-                        tf_outputs.attention_scores,
-                        feed_dict)
-                    pickle.dump(attention_scores, out_file)
+                    fetched = sess.run(fetches, feed_dict)
+                    batch_print_alignment(*fetched)
 
                 except tf.errors.OutOfRangeError:
                     break
@@ -421,6 +494,9 @@ def main():
         fetches = [
             [data_batch['sent_text'], data_batch['sent_ref_text']],
             bs_outputs.predicted_ids,
+        ] if not FLAGS.align else [
+            [data_batch['entry_text'], data_batch['entry_ref_text']],
+            align_bs_outputs.predicted_ids,
         ]
 
         cnt = 0
@@ -502,7 +578,7 @@ def main():
 
         epoch = 0
         while epoch < config_train.max_epochs:
-            name = 'joint'
+            name = 'align' if FLAGS.align else 'joint'
             train_op = train_ops[name]
             summary_op = summary_ops[name]
 

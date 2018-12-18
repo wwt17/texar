@@ -67,3 +67,27 @@ attention_decoder = {
         }
     }
 }
+
+
+align_rnn_cell = {
+    'type': 'LSTMBlockCell',
+    'kwargs': {
+        'num_units': dim,
+        'forget_bias': 0.
+    },
+    'dropout': {
+        'input_keep_prob': 0.8,
+        'state_keep_prob': 0.5,
+    },
+    'num_layers': 1
+}
+
+align_attention_decoder = {
+    'name': 'align_attention_decoder',
+    'attention': {
+        'type': 'LuongAttention',
+        'kwargs': {
+            'num_units': dim,
+        }
+    }
+}
