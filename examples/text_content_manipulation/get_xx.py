@@ -6,26 +6,12 @@ from __future__ import print_function
 
 import importlib
 import os
-import collections
 import numpy as np
 import tensorflow as tf
 import texar as tx
 import pickle
 from utils import *
 from munkres import *
-
-flags = tf.flags
-flags.DEFINE_string("config_data", "config_data_nba", "The data config.")
-FLAGS = flags.FLAGS
-
-config_data = importlib.import_module(FLAGS.config_data)
-
-sent_fields = ['sent']
-sd_fields = ['entry', 'attribute', 'value']
-all_fields = sent_fields + sd_fields
-ref_strs = ['', '_ref']
-
-DataItem = collections.namedtuple('DataItem', sd_fields)
 
 
 inf = int(1e9)
@@ -44,37 +30,19 @@ def calc_cost(a, b):
             return 0 if a.entry == b.entry else 1
 
 
-def get_match(batch, verbose=False):
-    batch_ = {}
-    xs = []
-    for ref_str in ref_strs:
-        for field in all_fields:
-            name = '{}{}'.format(field, ref_str)
-            text_name = '{}_text'.format(name)
-            batch_[text_name] = tx.utils.strip_special_tokens(
-                batch[text_name], is_token_list=True)
-            length_name = '{}_length'.format(name)
-            batch_[length_name] = batch[length_name] - 2
-        x = list(map(lambda _: DataItem(*_),
-                     zip(*[batch_['{}{}_text'.format(field, ref_str)]
-                           for field in sd_fields])))
-        xs.append(x)
-
-    if verbose:
-        for name, value in batch_.items():
-            print('{}: {}'.format(name, value))
-        for x in xs:
-            print(x)
+def get_match(text00, text01, text02, text10, text11, text12):
+    text00, text01, text02, text10, text11, text12 = map(
+        strip_special_tokens_of_list,
+        (text00, text01, text02, text10, text11, text12))
+    texts = [DataItem(text00, text01, text02),
+             DataItem(text10, text11, text12)]
+    xs = list(map(pack_sd, texts))
 
     cost = [[calc_cost(x_i, x_j) for x_j in xs[1]] for x_i in xs[0]]
-    match = Munkres().compute(cost)
+    return Munkres().compute(cost)
 
-    if verbose:
-        print('{} matches:'.format(len(match)))
-        for i, j in match:
-            print('{}\t{}\t->{}'.format(xs[0][i], xs[1][j], cost[i][j]))
 
-    return match
+batch_get_match = batchize(get_match)
 
 
 def main():
@@ -86,7 +54,7 @@ def main():
 
 
     def _get_match(sess, mode):
-        print('in _get_alignment')
+        print('in _get_match')
 
         data_iterator.restart_dataset(sess, mode)
         feed_dict = {
@@ -97,21 +65,18 @@ def main():
         with open('match.pkl', 'wb') as out_file:
             while True:
                 try:
-                    batch = sess.run(
-                        data_batch,
-                        feed_dict)
-                    items = tuple(batch.items())
-                    keys, values = zip(*items)
-                    for values_ in zip(*values):
-                        batch_ = {
-                            key: value for key, value in zip(keys, values_)}
-                        match = get_match(batch_)
+                    batch = sess.run(data_batch, feed_dict)
+                    texts = [[batch['{}{}_text'.format(field, ref_str)]
+                              for field in sd_fields]
+                             for ref_str in ref_strs]
+                    matches = batch_get_match(*(texts[0] + texts[1]))
+                    for match in matches:
                         pickle.dump(match, out_file)
 
                 except tf.errors.OutOfRangeError:
                     break
 
-        print('end _get_alignment')
+        print('end _get_match')
 
 
     with tf.Session() as sess:
@@ -123,4 +88,12 @@ def main():
 
 
 if __name__ == '__main__':
+    flags = tf.flags
+    flags.DEFINE_string("config_data", "config_data_nba_stable",
+                        "The data config.")
+    flags.DEFINE_boolean("verbose", False, "verbose.")
+    FLAGS = flags.FLAGS
+
+    config_data = importlib.import_module(FLAGS.config_data)
+
     main()

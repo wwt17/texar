@@ -18,6 +18,8 @@ import pickle
 from copy_net import CopyNetWrapper
 from texar.core import get_train_op
 from utils import *
+from get_xx import get_match
+from get_xy import get_align
 
 flags = tf.flags
 flags.DEFINE_string("config_data", "config_data_nba", "The data config.")
@@ -30,6 +32,7 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "expr_name is used.")
 flags.DEFINE_boolean("copynet", False, "Whether to use copynet.")
 flags.DEFINE_boolean("attn", False, "Whether to use attention.")
+flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
 flags.DEFINE_boolean("align", False, "Whether it is to get alignment.")
 flags.DEFINE_boolean("output_align", False, "Whether to output alignment.")
 FLAGS = flags.FLAGS
@@ -70,11 +73,45 @@ def batch_print_alignment(datas, sents, scores):
         print_alignment(data, sent, score)
 
 
+def get_match_align(text00, text01, text02, text10, text11, text12, sent_text):
+    """Combining match and align. All texts must not contain BOS.
+    """
+    matches = get_match(text00, text01, text02, text10, text11, text12)
+    aligns = get_align(text10, text11, text12, sent_text)
+    match = {i: j for i, j in matches}
+    n = len(text00)
+    m = len(sent_text)
+    ret = np.zeros([n, m], dtype=np.float32)
+    for i in range(n):
+        try:
+            k = match[i]
+        except KeyError:
+            continue
+        align = aligns[k]
+        ret[i][:len(align)] = align
+    return ret
+
+def batch_get_match_align(*texts):
+    return np.array(batchize(get_match_align)(*texts), dtype=np.float32)
+
+
 def build_model(data_batch, data):
     batch_size, num_steps = [
         tf.shape(data_batch["value_text_ids"])[d] for d in range(2)]
     vocab = data.vocab('sent')
 
+    if FLAGS.sd_path:
+        texts = []
+        for ref_str in ref_strs:
+            texts.extend(data_batch['{}{}_text'.format(field, ref_str)][:, 1:-1]
+                         for field in sd_fields)
+        texts.extend(data_batch['{}{}_text'.format(field, ref_strs[1])][:, 1:]
+                     for field in sent_fields)
+        match_align = tf.py_func(
+            batch_get_match_align, texts, tf.float32, stateful=False,
+            name='match_align')
+        match_align.set_shape(
+            [texts[-1].shape[0], texts[0].shape[1], texts[-1].shape[1]])
 
     id2str = '<{}>'.format
     bos_str, eos_str = map(id2str, (vocab.bos_token_id, vocab.eos_token_id))
@@ -116,9 +153,6 @@ def build_model(data_batch, data):
         return tf.concat(outputs, -1)
 
 
-    sd_fields = ['entry', 'attribute', 'value']
-
-
     def encode(ref_str):
         sent_ids = data_batch['sent{}_text_ids'.format(ref_str)][:, :-1]
         sent_embeds = embedders['sent'](sent_ids)
@@ -143,7 +177,6 @@ def build_model(data_batch, data):
             sd_ids, sd_embeds, sd_enc_outputs, sd_sequence_length
 
 
-    ref_strs = ['', '_ref']
     encode_results = [encode(ref_str) for ref_str in ref_strs]
     sent_ids, sent_embeds, sent_enc_outputs, sent_sequence_length, \
             sd_ids, sd_embeds, sd_enc_outputs, sd_sequence_length = \
@@ -196,10 +229,12 @@ def build_model(data_batch, data):
                 kwargs.update({
                 'input_ids': data_batch[
                     'sent{}_text_ids'.format(ref_strs[tgt_ref_flag])][:, :-1]})
+            match_align_ = match_align
             if beam_width is not None:
                 kwargs = {
                     name: tile_batch(value, beam_width)
                     for name, value in kwargs.items()}
+                match_align_ = tile_batch(match_align_, beam_width)
 
             def get_get_copy_scores(memory_ids_states, output_size):
                 memory_copy_states = [
@@ -209,10 +244,16 @@ def build_model(data_batch, data):
                         activation=tf.nn.tanh,
                         use_bias=False)
                     for _, memory_states in memory_ids_states]
+
                 def get_copy_scores(outputs):
-                    return [
-                        tf.einsum("ijm,im->ij", memory_copy_state, outputs)
-                        for memory_copy_state in memory_copy_states]
+                    ret = [
+                        tf.einsum("bim,bm->bi", memory_copy_state, outputs)
+                        for memory_copy_state in memory_copy_states[:2]]
+                    if FLAGS.sd_path:
+                        ret.append(
+                            tf.einsum("bi,bij->bj", ret[1], match_align_))
+                    return ret
+
                 return get_copy_scores
 
             cell = CopyNetWrapper(
@@ -220,7 +261,8 @@ def build_model(data_batch, data):
                 memory_ids_states=[
                     (kwargs['{}_encoder_input_ids'.format(t)],
                      kwargs['{}_encoder_states'.format(t)])
-                    for t in ['tplt', 'sd']],
+                    for t in ['tplt', 'sd']
+                        + (['tplt'] if FLAGS.sd_path else [])],
                 input_ids=\
                     kwargs['input_ids'] if tgt_ref_flag is not None else None,
                 get_get_copy_scores=get_get_copy_scores)
