@@ -229,12 +229,14 @@ def build_model(data_batch, data):
                 kwargs.update({
                 'input_ids': data_batch[
                     'sent{}_text_ids'.format(ref_strs[tgt_ref_flag])][:, :-1]})
-            match_align_ = match_align
+            if FLAGS.sd_path:
+                match_align_ = match_align
             if beam_width is not None:
                 kwargs = {
                     name: tile_batch(value, beam_width)
                     for name, value in kwargs.items()}
-                match_align_ = tile_batch(match_align_, beam_width)
+                if FLAGS.sd_path:
+                    match_align_ = tile_batch(match_align_, beam_width)
 
             def get_get_copy_scores(memory_ids_states, output_size):
                 memory_copy_states = [
