@@ -100,19 +100,6 @@ def build_model(data_batch, data):
         tf.shape(data_batch["value_text_ids"])[d] for d in range(2)]
     vocab = data.vocab('sent')
 
-    if FLAGS.sd_path:
-        texts = []
-        for ref_str in ref_strs:
-            texts.extend(data_batch['{}{}_text'.format(field, ref_str)][:, 1:-1]
-                         for field in sd_fields)
-        texts.extend(data_batch['{}{}_text'.format(field, ref_strs[1])][:, 1:]
-                     for field in sent_fields)
-        match_align = tf.py_func(
-            batch_get_match_align, texts, tf.float32, stateful=False,
-            name='match_align')
-        match_align.set_shape(
-            [texts[-1].shape[0], texts[0].shape[1], texts[-1].shape[1]])
-
     id2str = '<{}>'.format
     bos_str, eos_str = map(id2str, (vocab.bos_token_id, vocab.eos_token_id))
 
@@ -229,14 +216,26 @@ def build_model(data_batch, data):
                 kwargs.update({
                 'input_ids': data_batch[
                     'sent{}_text_ids'.format(ref_strs[tgt_ref_flag])][:, :-1]})
+
             if FLAGS.sd_path:
-                match_align_ = match_align
+                texts = []
+                for ref_flag in [sd_ref_flag, tplt_ref_flag]:
+                    texts.extend(data_batch['{}{}_text'.format(field, ref_strs[ref_flag])][:, 1:-1]
+                                 for field in sd_fields)
+                texts.extend(data_batch['{}{}_text'.format(field, ref_strs[tplt_ref_flag])][:, 1:]
+                             for field in sent_fields)
+                match_align = tf.py_func(
+                    batch_get_match_align, texts, tf.float32, stateful=False,
+                    name='match_align')
+                match_align.set_shape(
+                    [texts[-1].shape[0], texts[0].shape[1], texts[-1].shape[1]])
+
             if beam_width is not None:
                 kwargs = {
                     name: tile_batch(value, beam_width)
                     for name, value in kwargs.items()}
                 if FLAGS.sd_path:
-                    match_align_ = tile_batch(match_align_, beam_width)
+                    match_align = tile_batch(match_align, beam_width)
 
             def get_get_copy_scores(memory_ids_states, output_size):
                 memory_copy_states = [
@@ -253,7 +252,7 @@ def build_model(data_batch, data):
                         for memory_copy_state in memory_copy_states[:2]]
                     if FLAGS.sd_path:
                         ret.append(
-                            tf.einsum("bi,bij->bj", ret[1], match_align_))
+                            tf.einsum("bi,bij->bj", ret[1], match_align))
                     return ret
 
                 return get_copy_scores
