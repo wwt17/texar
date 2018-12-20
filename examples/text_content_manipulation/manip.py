@@ -35,6 +35,7 @@ flags.DEFINE_boolean("attn", False, "Whether to use attention.")
 flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
 flags.DEFINE_boolean("align", False, "Whether it is to get alignment.")
 flags.DEFINE_boolean("output_align", False, "Whether to output alignment.")
+flags.DEFINE_boolean("verbose", False, "verbose.")
 FLAGS = flags.FLAGS
 
 if FLAGS.output_align:
@@ -89,6 +90,15 @@ def get_match_align(text00, text01, text02, text10, text11, text12, sent_text):
             continue
         align = aligns[k]
         ret[i][:len(align)] = align
+
+    if FLAGS.verbose:
+        print(' ' * 20 + ' '.join(map(
+            '{:>12}'.format, strip_special_tokens_of_list(text00))))
+        for j, sent_token in enumerate(strip_special_tokens_of_list(sent_text)):
+            print('{:>20}'.format(sent_token) + ' '.join(map(
+                lambda x: '{:>12}'.format(x) if x != 0 else ' ' * 12,
+                ret[:, j])))
+
     return ret
 
 def batch_get_match_align(*texts):
