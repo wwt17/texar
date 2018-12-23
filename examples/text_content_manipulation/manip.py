@@ -20,6 +20,7 @@ from texar.core import get_train_op
 from utils import *
 from get_xx import get_match
 from get_xy import get_align
+from ie import get_precrec
 
 flags = tf.flags
 flags.DEFINE_string("config_data", "config_data_nba", "The data config.")
@@ -36,6 +37,8 @@ flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
 flags.DEFINE_boolean("align", False, "Whether it is to get alignment.")
 flags.DEFINE_boolean("output_align", False, "Whether to output alignment.")
 flags.DEFINE_boolean("verbose", False, "verbose.")
+flags.DEFINE_boolean("eval_ie", False, "Whether evaluate IE.")
+flags.DEFINE_integer("eval_ie_gpuid", 0, "ID of GPU on which IE runs.")
 FLAGS = flags.FLAGS
 
 if FLAGS.output_align:
@@ -554,8 +557,12 @@ def main():
             align_bs_outputs.predicted_ids,
         ]
 
-        hypo_file = open(os.path.join(
-            dir_model, "hypos.step{}.{}.txt".format(step, mode)), "w")
+        if not os.path.exists(dir_model):
+            os.makedirs(dir_model)
+
+        hypo_file_name = os.path.join(
+            dir_model, "hypos.step{}.{}.txt".format(step, mode))
+        hypo_file = open(hypo_file_name, "w")
 
         cnt = 0
         while True:
@@ -589,6 +596,15 @@ def main():
 
         hypo_file.close()
 
+        if FLAGS.eval_ie:
+            gold_file_name = os.path.join(
+                config_data.dst_dir, "gold.{}.txt".format(
+                    config_data.mode_to_filemode[mode]))
+            inter_file_name = "{}.h5".format(hypo_file_name[:-len(".txt")])
+            prec, rec = get_precrec(
+                gold_file_name, hypo_file_name, inter_file_name,
+                gpuid=FLAGS.eval_ie_gpuid)
+
         refs, hypos = zip(*ref_hypo_pairs)
         bleus = []
         get_bleu_name = '{}_BLEU'.format
@@ -603,6 +619,10 @@ def main():
         for i, bleu in enumerate(bleus):
             summary.value.add(
                 tag='{}/{}'.format(mode, get_bleu_name(i)), simple_value=bleu)
+        if FLAGS.eval_ie:
+            for name, value in {'precision': prec, 'recall': rec}.items():
+                summary.value.add(tag='{}/{}'.format(mode, name),
+                                  simple_value=value)
         summary_writer.add_summary(summary, step)
         summary_writer.flush()
 
