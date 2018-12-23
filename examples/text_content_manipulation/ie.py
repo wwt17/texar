@@ -32,13 +32,17 @@ def get_precrec(
     prep_generated_data(gen_file, dict_pfx, inter_file,
                         train_file=train_file, val_file=gold_file)
 
-    subprocess.call(["th", "extractor.lua",
-                     "-gpuid", str(gpuid+1),
-                     "-datafile", os.path.abspath("{}.h5".format(dict_pfx)),
-                     "-dict_pfx", os.path.abspath(dict_pfx),
-                     "-just_eval",
-                     "-preddata", os.path.abspath(inter_file)],
-                    cwd=data2text_dir)
+    ret = subprocess.call(
+        ["th", "extractor.lua",
+         "-gpuid", str(gpuid+1),
+         "-datafile", os.path.abspath("{}.h5".format(dict_pfx)),
+         "-dict_pfx", os.path.abspath(dict_pfx),
+         "-just_eval",
+         "-preddata", os.path.abspath(inter_file)],
+        cwd=data2text_dir)
+    if ret != 0:
+        raise Exception(
+            "run extractor.lua failed with return value {}".format(ret))
 
     pred_file = "{}-tuples.txt".format(inter_file)
     gold_items, pred_items = map(get_items, (gold_file, pred_file))
