@@ -543,6 +543,8 @@ def main():
             data_iterator.handle: data_iterator.get_handle(sess, mode)
         }
 
+        step = tf.train.global_step(sess, global_step)
+
         ref_hypo_pairs = []
         fetches = [
             [data_batch['sent_text'], data_batch['sent_ref_text']],
@@ -551,6 +553,9 @@ def main():
             [data_batch['entry_text'], data_batch['entry_ref_text']],
             align_bs_outputs.predicted_ids,
         ]
+
+        hypo_file = open(os.path.join(
+            dir_model, "hypos.step{}.{}.txt".format(step, mode)), "w")
 
         cnt = 0
         while True:
@@ -573,6 +578,7 @@ def main():
                         for i, s in enumerate(ref):
                             print('ref{}: {}'.format(i, ' '.join(s)))
                         print('hypo: {}'.format(' '.join(hypo)))
+                    print(' '.join(hypo), file=hypo_file)
                     cnt += 1
                 print('processed {} samples'.format(cnt))
 
@@ -580,6 +586,8 @@ def main():
 
             except tf.errors.OutOfRangeError:
                 break
+
+        hypo_file.close()
 
         refs, hypos = zip(*ref_hypo_pairs)
         bleus = []
@@ -590,8 +598,6 @@ def main():
             bleu = corpus_bleu(refs_, hypos)
             print('{}: {:.2f}'.format(get_bleu_name(i), bleu))
             bleus.append(bleu)
-
-        step = tf.train.global_step(sess, global_step)
 
         summary = tf.Summary()
         for i, bleu in enumerate(bleus):
