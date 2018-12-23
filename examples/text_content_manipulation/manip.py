@@ -57,6 +57,26 @@ ckpt_model = os.path.join(dir_model, 'model.ckpt')
 ckpt_best = os.path.join(dir_best, 'model.ckpt')
 
 
+def get_optimistic_restore_variables(ckpt_path, graph=tf.get_default_graph()):
+    reader = tf.train.NewCheckpointReader(ckpt_path)
+    saved_shapes = reader.get_variable_to_shape_map()
+    var_names = sorted([
+        (var.name, var.name.split(':')[0]) for var in tf.global_variables()
+        if var.name.split(':')[0] in saved_shapes])
+    restore_vars = []
+    for var_name, saved_var_name in var_names:
+        var = graph.get_tensor_by_name(var_name)
+        var_shape = var.get_shape().as_list()
+        if var_shape == saved_shapes[saved_var_name]:
+            restore_vars.append(var)
+    return restore_vars
+
+
+def get_optimistic_saver(ckpt_path, graph=tf.get_default_graph()):
+    return tf.train.Saver(
+        get_optimistic_restore_variables(ckpt_path, graph=graph))
+
+
 def print_alignment(data, sent, score):
     print(' ' * 20 + ' '.join(map('{:>12}'.format, data[0])))
     for j, sent_token in enumerate(sent[0]):
@@ -469,7 +489,11 @@ def main():
     def _restore_from_path(ckpt_path):
         print('restoring from {} ...'.format(ckpt_path))
 
-        saver.restore(sess, ckpt_path)
+        try:
+            saver.restore(sess, ckpt_path)
+        except tf.errors.NotFoundError:
+            print('Some variables are missing. Try optimistically restoring.')
+            (get_optimistic_saver(ckpt_path)).restore(sess, ckpt_path)
 
         print('done.')
 
