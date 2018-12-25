@@ -34,6 +34,11 @@ from utils import data_utils, utils
 from utils.preprocess import pad_token_id, bos_token_id, eos_token_id, \
     unk_token_id
 
+from texar.core.optimization import *
+from texar.hyperparams import HParams
+
+import horovod.tensorflow as hvd
+
 
 flags = tf.flags
 
@@ -117,6 +122,47 @@ def corpus_bleu(refs, hypos):
     return tx.evals.corpus_bleu_moses(refs, hypos, return_all=False)
 
 
+def get_train_op(loss, variables=None, learning_rate=None,
+                 global_step=None, increment_global_step=None, hparams=None):
+    if global_step is None:
+        global_step = tf.train.get_global_step()
+
+    hparams = HParams(hparams, default_optimization_hparams())
+
+    opt_hparams = hparams["optimizer"]
+    optimizer_fn, optimizer_class = get_optimizer_fn(opt_hparams)
+
+    if learning_rate is None:
+        learning_rate = opt_hparams["kwargs"].get("learning_rate", None)
+    if learning_rate is None:
+        # Try to get learning_rate from the default value of the
+        # optimizer's argument
+        opt_argspec = tx.utils.get_default_arg_values(optimizer_class.__init__)
+        learning_rate = opt_argspec.get("learning_rate", None)
+
+    grad_clip_fn = get_gradient_clip_fn(hparams["gradient_clip"])
+
+    lr_decay_fn = get_learning_rate_decay_fn(hparams["learning_rate_decay"])
+
+    optimizer = optimizer_fn(learning_rate)
+
+    optimizer = hvd.DistributedOptimizer(optimizer)
+
+    train_op = tf.contrib.layers.optimize_loss(
+        loss=loss,
+        global_step=global_step,
+        learning_rate=learning_rate,
+        optimizer=optimizer,
+        gradient_noise_scale=hparams["gradient_noise_scale"],
+        clip_gradients=grad_clip_fn,
+        learning_rate_decay_fn=lr_decay_fn,
+        variables=variables,
+        name=hparams["name"],
+        increment_global_step=increment_global_step)
+
+    return train_op
+
+
 def build_model(batch, train_data, learning_rate):
     """Assembles the transformer model.
     """
@@ -181,7 +227,7 @@ def build_model(batch, train_data, learning_rate):
     loss_xe = tf.reduce_sum(loss_xe * is_target) / tf.reduce_sum(is_target)
 
     for xe_name in xe_names:
-        train_ops[xe_name] = tx.core.get_train_op(
+        train_ops[xe_name] = get_train_op(
             loss_xe,
             learning_rate=learning_rate,
             hparams=getattr(config_train, 'train_{}'.format(xe_name)))
@@ -212,7 +258,7 @@ def build_model(batch, train_data, learning_rate):
         weights=config_train.weights)
 
     for debleu_name in debleu_names:
-        train_ops[debleu_name] = tx.core.get_train_op(
+        train_ops[debleu_name] = get_train_op(
             loss_debleu,
             hparams=getattr(config_train, 'train_{}'.format(debleu_name)))
 
@@ -314,7 +360,7 @@ def build_model(batch, train_data, learning_rate):
             (sample_reward - tile(baseline_reward)) * nll_pg)
         weight_pg = getattr(config_train, 'weight_{}'.format(name))
         loss_pg_xe = loss_pg * weight_pg + loss_xe * (1. - weight_pg)
-        train_ops[name] = tx.core.get_train_op(
+        train_ops[name] = get_train_op(
             loss_pg_xe,
             hparams=getattr(config_train, 'train_{}'.format(name)))
         return loss_pg, loss_pg_xe, train_ops[name]
@@ -333,6 +379,8 @@ def build_model(batch, train_data, learning_rate):
 def main():
     """Entrypoint.
     """
+    hvd.init()
+
     train_data, val_data, test_data = data_utils.load_data_numpy(
         config_data.input_dir, config_data.filename_prefix)
     dataset = {'train': train_data, 'val': val_data, 'test': test_data}
@@ -468,14 +516,15 @@ def main():
 
             summary_writer.add_summary(summary, step)
 
-            if (step + 1) % config_train.steps_per_val == 0:
-                global triggered
-                _eval_epoch(sess, summary_writer, 'val')
-                if triggered:
-                    break
+            if hvd.rank() == 0:
+                if (step + 1) % config_train.steps_per_val == 0:
+                    global triggered
+                    _eval_epoch(sess, summary_writer, 'val')
+                    if triggered:
+                        break
 
-            if (step + 1) % config_train.steps_per_test == 0:
-                _eval_epoch(sess, summary_writer, 'test')
+                if (step + 1) % config_train.steps_per_test == 0:
+                    _eval_epoch(sess, summary_writer, 'test')
 
         print('end _train_epoch')
 
@@ -577,7 +626,13 @@ def main():
         print('end _eval_epoch')
         return eval_bleu
 
-    with tf.Session() as sess:
+
+    broadcast_variables = hvd.broadcast_global_variables(0)
+
+    session_config = tf.ConfigProto()
+    session_config.gpu_options.visible_device_list = str(hvd.local_rank())
+
+    with tf.Session(config=session_config) as sess:
         sess.run(tf.global_variables_initializer())
         sess.run(tf.local_variables_initializer())
         sess.run(tf.tables_initializer())
@@ -598,10 +653,13 @@ def main():
             _restore_from(dir_best, ['convergence_trigger'])
             annealing_trigger.trigger()
 
-        if restore_from:
-            _restore_from_path(restore_from, relax=True)
-        else:
-            _restore_from(dir_model, relax=True)
+        if hvd.rank() == 0:
+            if restore_from:
+                _restore_from_path(restore_from, relax=True)
+            else:
+                _restore_from(dir_model, relax=True)
+
+        broadcast_variables.run()
 
         summary_writer = tf.summary.FileWriter(
             os.path.join(expr_name, 'log'), sess.graph, flush_secs=30)
@@ -616,16 +674,17 @@ def main():
             print('epoch #{} {}:'.format(
                 epoch, (train_data_name, train_op_name, mask_pattern)))
 
-            val_bleu = _eval_epoch(sess, summary_writer, 'val')
-            test_bleu = _eval_epoch(sess, summary_writer, 'test')
-            if triggered:
-                _restore_and_anneal()
-                continue
+            if hvd.rank() == 0:
+                val_bleu = _eval_epoch(sess, summary_writer, 'val')
+                test_bleu = _eval_epoch(sess, summary_writer, 'test')
+                if triggered:
+                    _restore_and_anneal()
+                    continue
 
-            step = tf.train.global_step(sess, global_step)
+                step = tf.train.global_step(sess, global_step)
 
-            print('epoch: {}, step: {}, val BLEU: {}, test BLEU: {}'.format(
-                epoch, step, val_bleu, test_bleu))
+                print('epoch: {}, step: {}, val BLEU: {}, test BLEU: {}'.format(
+                    epoch, step, val_bleu, test_bleu))
 
             _train_epoch(sess, summary_writer, train_data_name,
                          train_op, summary_op)
@@ -636,10 +695,12 @@ def main():
             epoch += 1
 
             step = tf.train.global_step(sess, global_step)
-            _save_to(ckpt_model, step)
+            if hvd.rank() == 0:
+                _save_to(ckpt_model, step)
 
-        test_bleu = _eval_epoch(sess, summary_writer, 'test')
-        print('epoch: {}, test BLEU: {}'.format(epoch, test_bleu))
+        if hvd.rank() == 0:
+            test_bleu = _eval_epoch(sess, summary_writer, 'test')
+            print('epoch: {}, test BLEU: {}'.format(epoch, test_bleu))
 
 
 if __name__ == '__main__':
