@@ -123,7 +123,7 @@ def corpus_bleu(refs, hypos):
 
 
 def get_train_op(loss, variables=None, learning_rate=None,
-                 global_step=None, increment_global_step=None, hparams=None):
+                 global_step=None, increment_global_step=True, hparams=None):
     if global_step is None:
         global_step = tf.train.get_global_step()
 
