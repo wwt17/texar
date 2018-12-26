@@ -241,10 +241,13 @@ def build_model(data_batch, data):
 
         if FLAGS.copynet: # copynet
             kwargs = {
-                'tplt_encoder_input_ids': sent_ids[tplt_ref_flag][:, 1:],
-                'tplt_encoder_states': sent_enc_outputs[tplt_ref_flag][:, 1:],
-                'sd_encoder_input_ids': sd_ids[sd_ref_flag]['entry'],
-                'sd_encoder_states': sd_enc_outputs[sd_ref_flag]}
+                'tplt_ids': sent_ids[tplt_ref_flag][:, 1:],
+                'tplt_states': sent_enc_outputs[tplt_ref_flag][:, 1:],
+                'tplt_lengths': sent_sequence_length[tplt_ref_flag] - 1,
+                'sd_ids': sd_ids[sd_ref_flag]['entry'],
+                'sd_states': sd_enc_outputs[sd_ref_flag],
+                'sd_lengths': sd_sequence_length[sd_ref_flag],
+            }
             if tgt_ref_flag is not None:
                 kwargs.update({
                 'input_ids': data_batch[
@@ -270,14 +273,14 @@ def build_model(data_batch, data):
                 if FLAGS.sd_path:
                     match_align = tile_batch(match_align, beam_width)
 
-            def get_get_copy_scores(memory_ids_states, output_size):
+            def get_get_copy_scores(memory_ids_states_lengths, output_size):
                 memory_copy_states = [
                     tf.layers.dense(
                         memory_states,
                         units=output_size,
                         activation=tf.nn.tanh,
                         use_bias=False)
-                    for _, memory_states in memory_ids_states]
+                    for _, memory_states, _ in memory_ids_states_lengths]
 
                 def get_copy_scores(outputs):
                     ret = [
@@ -292,9 +295,9 @@ def build_model(data_batch, data):
 
             cell = CopyNetWrapper(
                 cell=cell, vocab_size=vocab.size,
-                memory_ids_states=[
-                    (kwargs['{}_encoder_input_ids'.format(t)],
-                     kwargs['{}_encoder_states'.format(t)])
+                memory_ids_states_lengths=[
+                    tuple(kwargs['{}_{}'.format(t, s)] for s in
+                    ('ids', 'states', 'lengths'))
                     for t in ['tplt', 'sd']
                         + (['tplt'] if FLAGS.sd_path else [])],
                 input_ids=\

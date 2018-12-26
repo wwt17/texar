@@ -24,21 +24,25 @@ class CopyNetWrapperState(collections.namedtuple(
 
 class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
     def __init__(
-            self, cell, memory_ids_states, vocab_size,
+            self, cell, memory_ids_states_lengths, vocab_size,
             get_get_copy_scores, input_ids=None, initial_cell_state=None,
             reuse=tf.AUTO_REUSE, name=None):
         super(CopyNetWrapper, self).__init__(name=name)
 
         with tf.variable_scope("CopyNetWrapper", reuse=reuse):
             self._cell = cell
-            self._memory_ids_states = [
-                (memory_ids, memory_states)
-                for memory_ids, memory_states in memory_ids_states]
+            self._memory_ids_states_lengths = [
+                (memory_ids,
+                 tx.utils.mask_sequences(
+                    memory_states, memory_lengths, tensor_rank=3),
+                 memory_lengths)
+                for memory_ids, memory_states, memory_lengths in
+                memory_ids_states_lengths]
             self._vocab_size = vocab_size
             self._input_ids = input_ids
             self._initial_cell_state = initial_cell_state
             self._get_copy_scores = get_get_copy_scores(
-                memory_ids_states, self._cell.output_size)
+                memory_ids_states_lengths, self._cell.output_size)
             self._projection = tf.layers.Dense(self._vocab_size, use_bias=False)
 
     def __call__(self, inputs, state, scope=None):
@@ -54,7 +58,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                 lambda: last_ids)
         cell_state = state.cell_state
 
-        def _get_selective_read(memory_ids, memory_states, prob):
+        def _get_selective_read(memory_ids, memory_states, memory_lengths, prob):
             int_mask = tf.cast(
                 tf.equal(tf.expand_dims(last_ids, 1), memory_ids),
                 tf.int32)
@@ -69,10 +73,10 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             return tf.einsum("ijk,ij->ik", memory_states, rou)
 
         inputs = [inputs]
-        for (memory_ids, memory_states), copy_prob in \
-                zip(self._memory_ids_states, state.copy_probs):
+        for (memory_ids, memory_states, memory_lengths), copy_prob in \
+                zip(self._memory_ids_states_lengths, state.copy_probs):
             inputs.append(_get_selective_read(
-                memory_ids, memory_states, copy_prob))
+                memory_ids, memory_states, memory_lengths, copy_prob))
         inputs = tf.concat(inputs, -1)  # y_(t-1)
 
         # generate mode
@@ -85,8 +89,11 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
 
         # copy from memory
         copy_scores = self._get_copy_scores(outputs)
-        exp_copy_scores = [tf.exp(tf.cast(copy_score, tf.float64))
-                           for copy_score in copy_scores]
+        exp_copy_scores = [
+            tx.utils.mask_sequences(
+                tf.exp(tf.cast(copy_score, tf.float64)), memory_lengths)
+            for (_, _, memory_lengths), copy_score in
+            zip(self._memory_ids_states_lengths, copy_scores)]
         for exp_copy_score in exp_copy_scores:
             sumexp_copy_score = tf.reduce_sum(exp_copy_score, 1)
             Z = Z + sumexp_copy_score
@@ -111,8 +118,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
 
 
         copy_probs = []
-        for (memory_ids, _), exp_copy_score in zip(
-                self._memory_ids_states, exp_copy_scores):
+        for (memory_ids, _, _), exp_copy_score in zip(
+                self._memory_ids_states_lengths, exp_copy_scores):
             copy_prob = exp_copy_score / Z_
             copy_probs.append(copy_prob)
             probs_copy = steps_to_vocabs(memory_ids, copy_prob)
@@ -137,8 +144,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             cell_state=self._cell.state_size,
             time=tf.TensorShape([]),
             last_ids=tf.TensorShape([]),
-            copy_probs=[tf.shape(memory_ids)[1] for memory_ids, _ in
-                       self._memory_ids_states],
+            copy_probs=[tf.shape(memory_ids)[1] for memory_ids, _, _ in
+                       self._memory_ids_states_lengths],
         )
 
     @property
@@ -156,7 +163,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             last_ids = tf.zeros([batch_size], tf.int64) - 1
             copy_probs = [
                 tf.zeros([batch_size, tf.shape(memory_ids)[1]], tf.float64)
-                for memory_ids, _ in self._memory_ids_states]
+                for memory_ids, _, _ in self._memory_ids_states_lengths]
             return CopyNetWrapperState(
                 cell_state=cell_state,
                 time=tf.zeros([], dtype=tf.int64), last_ids=last_ids,
