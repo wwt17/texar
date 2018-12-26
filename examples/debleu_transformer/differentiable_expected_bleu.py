@@ -688,9 +688,10 @@ def main():
 
             _train_epoch(sess, summary_writer, train_data_name,
                          train_op, summary_op)
-            if triggered:
-                _restore_and_anneal()
-                continue
+            if hvd.rank() == 0:
+                if triggered:
+                    _restore_and_anneal()
+                    continue
 
             epoch += 1
 
