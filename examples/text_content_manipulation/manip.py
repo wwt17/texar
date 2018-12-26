@@ -174,9 +174,9 @@ def build_model(data_batch, data):
 
 
     def encode(ref_str):
-        sent_ids = data_batch['sent{}_text_ids'.format(ref_str)][:, :-1]
+        sent_ids = data_batch['sent{}_text_ids'.format(ref_str)]
         sent_embeds = embedders['sent'](sent_ids)
-        sent_sequence_length = data_batch['sent{}_length'.format(ref_str)] - 1
+        sent_sequence_length = data_batch['sent{}_length'.format(ref_str)]
         sent_enc_outputs, _ = sent_encoder(
             sent_embeds, sequence_length=sent_sequence_length)
         sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
@@ -241,8 +241,8 @@ def build_model(data_batch, data):
 
         if FLAGS.copynet: # copynet
             kwargs = {
-                'tplt_encoder_input_ids': sent_ids[tplt_ref_flag],
-                'tplt_encoder_states': sent_enc_outputs[tplt_ref_flag],
+                'tplt_encoder_input_ids': sent_ids[tplt_ref_flag][:, 1:],
+                'tplt_encoder_states': sent_enc_outputs[tplt_ref_flag][:, 1:],
                 'sd_encoder_input_ids': sd_ids[sd_ref_flag]['entry'],
                 'sd_encoder_states': sd_enc_outputs[sd_ref_flag]}
             if tgt_ref_flag is not None:
