@@ -21,6 +21,7 @@ from utils import *
 from get_xx import get_match
 from get_xy import get_align
 from ie import get_precrec
+import rnn_decoders
 
 flags = tf.flags
 flags.DEFINE_string("config_data", "config_data_nba", "The data config.")
@@ -228,7 +229,7 @@ def build_model(data_batch, data):
             else:
                 raise Exception(
                     "Must specify either tplt_ref_flag or sd_ref_flag.")
-            attention_decoder = tx.modules.AttentionRNNDecoder(
+            attention_decoder = rnn_decoders.AttentionRNNDecoder(
                 cell=cell,
                 memory=memory,
                 memory_sequence_length=memory_sequence_length,
@@ -304,7 +305,7 @@ def build_model(data_batch, data):
                     kwargs['input_ids'] if tgt_ref_flag is not None else None,
                 get_get_copy_scores=get_get_copy_scores)
 
-        decoder = tx.modules.BasicRNNDecoder(
+        decoder = rnn_decoders.BasicRNNDecoder(
             cell=cell, hparams=config_model.decoder,
             **output_layer_params)
         return decoder
@@ -331,7 +332,7 @@ def build_model(data_batch, data):
         tgt_ref_flag = sd_ref_flag
         tgt_str = 'sent{}'.format(ref_strs[tgt_ref_flag])
         sequence_length = data_batch['{}_length'.format(tgt_str)] - 1
-        decoder, tf_outputs, _, _ = get_decoder_and_outputs(
+        decoder, tf_outputs, _, tf_lengths = get_decoder_and_outputs(
             cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
             {'decoding_strategy': 'train_greedy',
              'inputs': sent_embeds[tgt_ref_flag],
@@ -353,7 +354,7 @@ def build_model(data_batch, data):
         loss = tf.reduce_mean(loss, 0)
         losses[loss_name] = loss
 
-        return decoder, tf_outputs, loss
+        return decoder, tf_outputs, tf_lengths, loss
 
 
     def beam_searching(cell, tplt_ref_flag, sd_ref_flag, beam_width):
@@ -428,8 +429,8 @@ def build_model(data_batch, data):
                loss, tf_outputs, bs_outputs
 
 
-    decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
-    rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 'REC')
+    decoder, tf_outputs, tf_lengths, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
+    rec_decoder, _, rec_lengths, rec_loss = teacher_forcing(rnn_cell, 1, 1, 'REC')
     if config_train.rec_weight == 0:
         joint_loss = loss
     elif config_train.rec_weight == 1:
@@ -450,7 +451,7 @@ def build_model(data_batch, data):
         name: get_train_op(losses[name], hparams=config_train.train[name])
         for name in config_train.train}
 
-    return train_ops, bs_outputs, \
+    return train_ops, bs_outputs, tf_outputs, tf_lengths, \
            align_sents, align_sds, align_tf_outputs, align_bs_outputs
 
 
@@ -463,7 +464,7 @@ def main():
 
     global_step = tf.train.get_or_create_global_step()
 
-    train_ops, bs_outputs, \
+    train_ops, bs_outputs, tf_outputs, tf_lengths, \
             align_sents, align_sds, align_tf_outputs, align_bs_outputs \
         = build_model(data_batch, datasets['train'])
 
@@ -544,10 +545,27 @@ def main():
             tx.global_mode(): tf.estimator.ModeKeys.TRAIN,
             data_iterator.handle: data_iterator.get_handle(sess, mode),
         }
+        vocab = datasets['train'].vocab('sent')
 
         while True:
             try:
-                loss, summary = sess.run((train_op, summary_op), feed_dict)
+                loss, summary, lengths, copy_probs, Zs, sent_ref_texts, entry_texts, sent_texts = sess.run((train_op, summary_op, tf_lengths, tf_outputs.cell_state.copy_probs, tf_outputs.cell_state.Zs, data_batch['sent_ref_text'][:, 1:], data_batch['entry_text'][:, 1:], data_batch['sent_text'][:, 1:]), feed_dict)
+                cnt = len(copy_probs)
+                for _ in zip(*([lengths] + copy_probs + Zs + [sent_ref_texts, entry_texts, sent_texts])):
+                    steps, _, texts, target_texts = _[0], _[1:-3], _[-3:-1], _[-1]
+                    print('data:\t{}'.format(' '.join(texts[1])))
+                    print('tplt:\t{}'.format(' '.join(texts[0])))
+                    print('trgt:\t{}'.format(' '.join(target_texts)))
+                    texts = [texts[i % len(texts)] for i in range(cnt)]
+                    print('decode steps: {}'.format(steps))
+                    for step, __ in enumerate(zip(*_)):
+                        if step >= steps:
+                            break
+                        probs, zs = __[:cnt], __[cnt:]
+                        print('target: {}'.format(target_texts[step]))
+                        print('zs: {}'.format(' '.join(map('{:.2f}'.format, zs))))
+                        for prob, text in zip(probs, texts):
+                            print('{2:.2f}\t{1:.2f}\t{0}'.format(text[np.argmax(prob)], np.max(prob), np.sum(prob)))
 
                 step = tf.train.global_step(sess, global_step)
 
@@ -688,8 +706,8 @@ def main():
             train_op = train_ops[name]
             summary_op = summary_ops[name]
 
-            val_bleu = _eval_epoch(sess, summary_writer, 'val')
-            test_bleu = _eval_epoch(sess, summary_writer, 'test')
+            val_bleu = 0. # _eval_epoch(sess, summary_writer, 'val')
+            test_bleu = 0. # _eval_epoch(sess, summary_writer, 'test')
 
             step = tf.train.global_step(sess, global_step)
 
