@@ -34,6 +34,8 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
 flags.DEFINE_boolean("copynet", False, "Whether to use copynet.")
 flags.DEFINE_boolean("attn", False, "Whether to use attention.")
 flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
+flags.DEFINE_float("sd_path_multiplicator", 1., "Structured data path multiplicator.")
+flags.DEFINE_float("sd_path_addend", 0., "Structured data path addend.")
 flags.DEFINE_boolean("align", False, "Whether it is to get alignment.")
 flags.DEFINE_boolean("output_align", False, "Whether to output alignment.")
 flags.DEFINE_boolean("verbose", False, "verbose.")
@@ -288,7 +290,7 @@ def build_model(data_batch, data):
                         for memory_copy_state in memory_copy_states[:2]]
                     if FLAGS.sd_path:
                         ret.append(
-                            tf.einsum("bi,bij->bj", ret[1], match_align))
+                            FLAGS.sd_path_multiplicator * tf.einsum("bi,bij->bj", ret[1], match_align) + FLAGS.sd_path_addend)
                     return ret
 
                 return get_copy_scores
