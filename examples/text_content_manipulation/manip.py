@@ -31,7 +31,8 @@ flags.DEFINE_string("expr_name", "nba", "The experiment name. "
 flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "restore from. If not specified, the latest checkpoint in "
                     "expr_name is used.")
-flags.DEFINE_boolean("copynet", False, "Whether to use copynet.")
+flags.DEFINE_boolean("copy_x", False, "Whether to copy from x.")
+flags.DEFINE_boolean("copy_y_", False, "Whether to copy from y'.")
 flags.DEFINE_boolean("attn", False, "Whether to use attention.")
 flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
 flags.DEFINE_float("sd_path_multiplicator", 1., "Structured data path multiplicator.")
@@ -208,59 +209,73 @@ def build_model(data_batch, data):
     rnn_cell = tx.core.layers.get_rnn_cell(config_model.rnn_cell)
 
 
-    def get_decoder(cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
+    def get_decoder(cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
                     beam_width=None):
+        copy_flag = FLAGS.copy_x or FLAGS.copy_y_
         output_layer_params = \
-            {'output_layer': tf.identity} if FLAGS.copynet else \
+            {'output_layer': tf.identity} if copy_flag else \
             {'vocab_size': vocab.size}
 
         if FLAGS.attn: # attention
-            if tplt_ref_flag is not None and sd_ref_flag is not None:
+            if y__ref_flag is not None and x_ref_flag is not None:
                 memory = tf.concat(
-                    [sent_enc_outputs[tplt_ref_flag],
-                     sd_enc_outputs[sd_ref_flag]],
+                    [sent_enc_outputs[y__ref_flag],
+                     sd_enc_outputs[x_ref_flag]],
                     axis=1)
                 memory_sequence_length = None
-            elif tplt_ref_flag is not None:
-                memory = sent_enc_outputs[tplt_ref_flag]
-                memory_sequence_length = sent_sequence_length[tplt_ref_flag]
-            elif sd_ref_flag is not None:
-                memory = sd_enc_outputs[sd_ref_flag]
-                memory_sequence_length = sd_sequence_length[sd_ref_flag]
+            elif y__ref_flag is not None:
+                memory = sent_enc_outputs[y__ref_flag]
+                memory_sequence_length = sent_sequence_length[y__ref_flag]
+            elif x_ref_flag is not None:
+                memory = sd_enc_outputs[x_ref_flag]
+                memory_sequence_length = sd_sequence_length[x_ref_flag]
             else:
                 raise Exception(
-                    "Must specify either tplt_ref_flag or sd_ref_flag.")
+                    "Must specify either y__ref_flag or x_ref_flag.")
             attention_decoder = tx.modules.AttentionRNNDecoder(
                 cell=cell,
                 memory=memory,
                 memory_sequence_length=memory_sequence_length,
                 hparams=config_model.attention_decoder,
                 **output_layer_params)
-            if not FLAGS.copynet:
+            if not copy_flag:
                 return attention_decoder
             cell = attention_decoder.cell if beam_width is None else \
                    attention_decoder._get_beam_search_cell(beam_width)
 
-        if FLAGS.copynet: # copynet
+        if copy_flag: # copynet
             kwargs = {
-                'tplt_ids': sent_ids[tplt_ref_flag][:, 1:],
-                'tplt_states': sent_enc_outputs[tplt_ref_flag][:, 1:],
-                'tplt_lengths': sent_sequence_length[tplt_ref_flag] - 1,
-                'sd_ids': sd_ids[sd_ref_flag]['entry'],
-                'sd_states': sd_enc_outputs[sd_ref_flag],
-                'sd_lengths': sd_sequence_length[sd_ref_flag],
+                'y__ids': sent_ids[y__ref_flag][:, 1:],
+                'y__states': sent_enc_outputs[y__ref_flag][:, 1:],
+                'y__lengths': sent_sequence_length[y__ref_flag] - 1,
+                'x_ids': sd_ids[x_ref_flag]['entry'],
+                'x_states': sd_enc_outputs[x_ref_flag],
+                'x_lengths': sd_sequence_length[x_ref_flag],
             }
+
             if tgt_ref_flag is not None:
                 kwargs.update({
                 'input_ids': data_batch[
                     'sent{}_text_ids'.format(ref_strs[tgt_ref_flag])][:, :-1]})
 
+            memory_prefixes = []
+
+            if FLAGS.copy_y_:
+                memory_prefixes.append('y_')
+
+            if FLAGS.copy_x:
+                memory_prefixes.append('x')
+
             if FLAGS.sd_path:
+                assert FLAGS.copy_x
+
+                memory_prefixes.append('y_')
+
                 texts = []
-                for ref_flag in [sd_ref_flag, tplt_ref_flag]:
+                for ref_flag in [x_ref_flag, y__ref_flag]:
                     texts.extend(data_batch['{}{}_text'.format(field, ref_strs[ref_flag])][:, 1:-1]
                                  for field in sd_fields)
-                texts.extend(data_batch['{}{}_text'.format(field, ref_strs[tplt_ref_flag])][:, 1:]
+                texts.extend(data_batch['{}{}_text'.format(field, ref_strs[y__ref_flag])][:, 1:]
                              for field in sent_fields)
                 match_align = tf.py_func(
                     batch_get_match_align, texts, tf.float32, stateful=False,
@@ -284,13 +299,23 @@ def build_model(data_batch, data):
                         use_bias=False)
                     for _, memory_states, _ in memory_ids_states_lengths]
 
-                def get_copy_scores(outputs):
-                    ret = [
-                        tf.einsum("bim,bm->bi", memory_copy_state, outputs)
-                        for memory_copy_state in memory_copy_states[:2]]
+                def get_copy_scores(query):
+                    ret = []
+
+                    if FLAGS.copy_y_:
+                        ret_y_ = tf.einsum("bim,bm->bi", memory_copy_states[len(ret)], query)
+                        ret.append(ret_y_)
+
+                    if FLAGS.copy_x:
+                        ret_x = tf.einsum("bim,bm->bi", memory_copy_states[len(ret)], query)
+                        ret.append(ret_x)
+
                     if FLAGS.sd_path:
-                        ret.append(
-                            FLAGS.sd_path_multiplicator * tf.einsum("bi,bij->bj", ret[1], match_align) + FLAGS.sd_path_addend)
+                        ret_sd_path = FLAGS.sd_path_multiplicator * \
+                            tf.einsum("bi,bij->bj", ret_x, match_align) \
+                            + FLAGS.sd_path_addend
+                        ret.append(ret_sd_path)
+
                     return ret
 
                 return get_copy_scores
@@ -298,10 +323,9 @@ def build_model(data_batch, data):
             cell = CopyNetWrapper(
                 cell=cell, vocab_size=vocab.size,
                 memory_ids_states_lengths=[
-                    tuple(kwargs['{}_{}'.format(t, s)] for s in
-                    ('ids', 'states', 'lengths'))
-                    for t in ['tplt', 'sd']
-                        + (['tplt'] if FLAGS.sd_path else [])],
+                    tuple(kwargs['{}_{}'.format(prefix, s)]
+                          for s in ('ids', 'states', 'lengths'))
+                    for prefix in memory_prefixes],
                 input_ids=\
                     kwargs['input_ids'] if tgt_ref_flag is not None else None,
                 get_get_copy_scores=get_get_copy_scores)
@@ -312,10 +336,10 @@ def build_model(data_batch, data):
         return decoder
 
     def get_decoder_and_outputs(
-            cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag, params,
+            cell, y__ref_flag, x_ref_flag, tgt_ref_flag, params,
             beam_width=None):
         decoder = get_decoder(
-            cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
+            cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
             beam_width=beam_width)
         if beam_width is None:
             ret = decoder(**params)
@@ -329,12 +353,12 @@ def build_model(data_batch, data):
     get_decoder_and_outputs = tf.make_template(
         'get_decoder_and_outputs', get_decoder_and_outputs)
 
-    def teacher_forcing(cell, tplt_ref_flag, sd_ref_flag, loss_name):
-        tgt_ref_flag = sd_ref_flag
+    def teacher_forcing(cell, y__ref_flag, x_ref_flag, loss_name):
+        tgt_ref_flag = x_ref_flag
         tgt_str = 'sent{}'.format(ref_strs[tgt_ref_flag])
         sequence_length = data_batch['{}_length'.format(tgt_str)] - 1
         decoder, tf_outputs, _, _ = get_decoder_and_outputs(
-            cell, tplt_ref_flag, sd_ref_flag, tgt_ref_flag,
+            cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
             {'decoding_strategy': 'train_greedy',
              'inputs': sent_embeds[tgt_ref_flag],
              'sequence_length': sequence_length})
@@ -345,10 +369,10 @@ def build_model(data_batch, data):
             logits=tf_outputs.logits,
             sequence_length=sequence_length,
             average_across_batch=False)
-        if config_train.add_bleu_weight and tplt_ref_flag is not None \
-                and tgt_ref_flag is not None and tplt_ref_flag != tgt_ref_flag:
+        if config_train.add_bleu_weight and y__ref_flag is not None \
+                and tgt_ref_flag is not None and y__ref_flag != tgt_ref_flag:
             w = tf.py_func(
-                batch_bleu, [sent_ids[tplt_ref_flag], tgt_sent_ids],
+                batch_bleu, [sent_ids[y__ref_flag], tgt_sent_ids],
                 tf.float32, stateful=False, name='W_BLEU')
             w.set_shape(loss.get_shape())
             loss = w * loss
@@ -358,13 +382,13 @@ def build_model(data_batch, data):
         return decoder, tf_outputs, loss
 
 
-    def beam_searching(cell, tplt_ref_flag, sd_ref_flag, beam_width):
+    def beam_searching(cell, y__ref_flag, x_ref_flag, beam_width):
         start_tokens = tf.ones_like(data_batch['sent_length']) * \
             vocab.bos_token_id
         end_token = vocab.eos_token_id
 
         decoder, bs_outputs, _, _ = get_decoder_and_outputs(
-            cell, tplt_ref_flag, sd_ref_flag, None,
+            cell, y__ref_flag, x_ref_flag, None,
             {'embedding': embedders['sent'],
              'start_tokens': start_tokens,
              'end_token': end_token,
