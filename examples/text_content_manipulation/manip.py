@@ -382,12 +382,26 @@ def build_model(data_batch, data):
 
         return decoder, tf_outputs, tf_lengths, loss
 
+    start_tokens = tf.ones_like(data_batch['sent_length']) * \
+        vocab.bos_token_id
+    end_token = vocab.eos_token_id
+
+    def infer_greedy(cell, y__ref_flag, x_ref_flag):
+        tgt_ref_flag = x_ref_flag
+        tgt_str = 'sent{}'.format(ref_strs[tgt_ref_flag])
+
+        decoder, outputs, _, lengths = get_decoder_and_outputs(
+            cell, y__ref_flag, x_ref_flag, None,
+            {'decoding_strategy': 'infer_greedy',
+             'embedding': embedders['sent'],
+             'start_tokens': start_tokens,
+             'end_token': end_token,
+             'max_decoding_length': config_train.infer_max_decoding_length})
+
+        tgt_sent_ids = data_batch['{}_text_ids'.format(tgt_str)][:, 1:]
+        return decoder, outputs, lengths
 
     def beam_searching(cell, y__ref_flag, x_ref_flag, beam_width):
-        start_tokens = tf.ones_like(data_batch['sent_length']) * \
-            vocab.bos_token_id
-        end_token = vocab.eos_token_id
-
         decoder, bs_outputs, _, _ = get_decoder_and_outputs(
             cell, y__ref_flag, x_ref_flag, None,
             {'embedding': embedders['sent'],
@@ -477,7 +491,9 @@ def build_model(data_batch, data):
         name: get_train_op(losses[name], hparams=config_train.train[name])
         for name in config_train.train}
 
-    return train_ops, bs_outputs, tf_outputs, tf_lengths, \
+    _, greedy_outputs, greedy_lengths = infer_greedy(rnn_cell, 1, 0)
+
+    return train_ops, bs_outputs, tf_outputs, tf_lengths, greedy_outputs, greedy_lengths, \
            align_sents, align_sds, align_tf_outputs, align_bs_outputs
 
 
@@ -490,7 +506,7 @@ def main():
 
     global_step = tf.train.get_or_create_global_step()
 
-    train_ops, bs_outputs, tf_outputs, tf_lengths, \
+    train_ops, bs_outputs, tf_outputs, tf_lengths, greedy_outputs, greedy_lengths, \
             align_sents, align_sds, align_tf_outputs, align_bs_outputs \
         = build_model(data_batch, datasets['train'])
 
@@ -575,22 +591,37 @@ def main():
 
         while True:
             try:
-                loss, summary, lengths, copy_probs, Zs, sent_ref_texts, entry_texts, sent_texts = sess.run((train_op, summary_op, tf_lengths, tf_outputs.cell_state.copy_probs, tf_outputs.cell_state.Zs, data_batch['sent_ref_text'][:, 1:], data_batch['entry_text'][:, 1:], data_batch['sent_text'][:, 1:]), feed_dict)
+                loss, summary, lengths, copy_probs, Zs, entry_texts, sent_ref_texts, sent_texts, gen_texts = sess.run((
+                        train_op, summary_op, greedy_lengths,
+                        greedy_outputs.cell_state.copy_probs,
+                        greedy_outputs.cell_state.Zs,
+                        data_batch['entry_text'][:, 1:],
+                        data_batch['sent_ref_text'][:, 1:],
+                        data_batch['sent_text'][:, 1:],
+                        vocab.map_ids_to_tokens(greedy_outputs.sample_id),
+                    ), feed_dict)
                 cnt = len(copy_probs)
-                for _ in zip(*([lengths] + copy_probs + Zs + [sent_ref_texts, entry_texts, sent_texts])):
-                    steps, _, texts, target_texts = _[0], _[1:-3], _[-3:-1], _[-1]
-                    print('data:\t{}'.format(' '.join(texts[1])))
-                    print('tplt:\t{}'.format(' '.join(texts[0])))
-                    print('trgt:\t{}'.format(' '.join(target_texts)))
-                    texts = [texts[i % len(texts)] for i in range(cnt)]
+                for _ in zip(*([lengths] + copy_probs + Zs + [entry_texts, sent_ref_texts, sent_texts, gen_texts])):
+                    steps, _, texts = _[0], _[1:-4], _[-4:]
+                    texts = list(texts)
+                    texts[3] = texts[3][:steps]
+                    for name, text in zip(("x", "y'", "y", "y^"), texts):
+                        print("{:<2}: {}".format(name, ' '.join(text)))
+                    copy_texts = []
+                    if FLAGS.copy_y_:
+                        copy_texts.append(texts[1])
+                    if FLAGS.copy_x:
+                        copy_texts.append(texts[0])
+                    if FLAGS.sd_path:
+                        copy_texts.append(texts[1])
                     print('decode steps: {}'.format(steps))
                     for step, __ in enumerate(zip(*_)):
                         if step >= steps:
                             break
                         probs, zs = __[:cnt], __[cnt:]
-                        print('target: {}'.format(target_texts[step]))
+                        #print('target: {}'.format(target_texts[step]))
                         print('zs: {}'.format(' '.join(map('{:.2f}'.format, zs))))
-                        for prob, text in zip(probs, texts):
+                        for prob, text in zip(probs, copy_texts):
                             print('{2:.2f}\t{1:.2f}\t{0}'.format(text[np.argmax(prob)], np.max(prob), np.sum(prob)))
 
                 step = tf.train.global_step(sess, global_step)
