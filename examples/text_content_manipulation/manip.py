@@ -267,9 +267,7 @@ def build_model(data_batch, data):
                 memory_prefixes.append('x')
 
             if FLAGS.sd_path:
-                assert FLAGS.copy_x
-
-                memory_prefixes.append('y_')
+                assert FLAGS.copy_x and FLAGS.copy_y_
 
                 texts = []
                 for ref_flag in [x_ref_flag, y__ref_flag]:
@@ -311,10 +309,9 @@ def build_model(data_batch, data):
                         ret.append(ret_x)
 
                     if FLAGS.sd_path:
-                        ret_sd_path = FLAGS.sd_path_multiplicator * \
+                        ret[0] = ret[0] + FLAGS.sd_path_multiplicator * \
                             tf.einsum("bi,bij->bj", ret_x, match_align) \
                             + FLAGS.sd_path_addend
-                        ret.append(ret_sd_path)
 
                     return ret
 
