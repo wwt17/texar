@@ -33,9 +33,6 @@ def get_align_score(x, y):
 
 
 def get_align(text00, text01, text02, text1):
-    text00, text01, text02, text1 = map(
-        strip_special_tokens_of_list,
-        (text00, text01, text02, text1))
     sd_texts, sent_texts = pack_sd(DataItem(text00, text01, text02)), text1
     align = [
         [get_align_score(x, y)
@@ -43,7 +40,7 @@ def get_align(text00, text01, text02, text1):
         for x in sd_texts]
     return np.array(align)
 
-batch_get_align = batchize(get_align)
+batch_get_align = batchize(strip_wrapper(get_align))
 
 
 def print_align(sd_text0, sd_text1, sd_text2, sent_text, align):

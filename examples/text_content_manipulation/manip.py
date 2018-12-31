@@ -18,7 +18,7 @@ import pickle
 from copy_net import CopyNetWrapper
 from texar.core import get_train_op
 from utils import *
-from get_xx import get_match
+from get_xx import get_cost
 from get_xy import get_align
 from ie import get_precrec
 
@@ -103,32 +103,34 @@ def batch_print_alignment(datas, sents, scores):
 def get_match_align(text00, text01, text02, text10, text11, text12, sent_text):
     """Combining match and align. All texts must not contain BOS.
     """
-    matches = get_match(text00, text01, text02, text10, text11, text12)
+    costs = get_cost(text00, text01, text02, text10, text11, text12)
     aligns = get_align(text10, text11, text12, sent_text)
-    match = {i: j for i, j in matches}
-    n = len(text00)
-    m = len(sent_text)
-    ret = np.zeros([n, m], dtype=np.float32)
-    for i in range(n):
-        try:
-            k = match[i]
-        except KeyError:
-            continue
-        align = aligns[k]
-        ret[i][:len(align)] = align
 
-    if FLAGS.verbose:
-        print(' ' * 20 + ' '.join(map(
-            '{:>12}'.format, strip_special_tokens_of_list(text00))))
-        for j, sent_token in enumerate(strip_special_tokens_of_list(sent_text)):
-            print('{:>20}'.format(sent_token) + ' '.join(map(
-                lambda x: '{:>12}'.format(x) if x != 0 else ' ' * 12,
-                ret[:, j])))
+    xx = np.exp(-costs)
+    Z = np.sum(xx)
+    xx = xx / Z
 
-    return ret
+    xy = aligns
 
-def batch_get_match_align(*texts):
-    return np.array(batchize(get_match_align)(*texts), dtype=np.float32)
+    match_align = np.matmul(xx, xy)
+
+    return match_align
+
+
+def keeping_shape_get_match_align(*texts):
+    match_align = get_match_align(*map(strip_special_tokens_of_list, texts))
+    match_align = np.pad(
+        match_align,
+        pad_width=[
+            (0, texts[0].shape[-1] - match_align.shape[0]),
+            (0, texts[-1].shape[-1] - match_align.shape[1]),
+        ],
+        mode='constant',
+    )
+    return match_align
+
+
+batch_get_match_align = np_batchize(keeping_shape_get_match_align)
 
 
 def build_model(data_batch, data):
@@ -150,10 +152,7 @@ def build_model(data_batch, data):
 
         return 0.01 * tx.evals.sentence_bleu(references=[ref], hypothesis=hypo)
 
-    def batch_bleu(refs, hypos):
-        return np.array(
-            [single_bleu(ref, hypo) for ref, hypo in zip(refs, hypos)],
-            dtype=np.float32)
+    batch_bleu = np_batchize(single_bleu)
 
 
     # losses

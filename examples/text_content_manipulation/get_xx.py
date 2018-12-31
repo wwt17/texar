@@ -30,19 +30,19 @@ def calc_cost(a, b):
             return 0 if a.entry == b.entry else 1
 
 
-def get_match(text00, text01, text02, text10, text11, text12):
-    text00, text01, text02, text10, text11, text12 = map(
-        strip_special_tokens_of_list,
-        (text00, text01, text02, text10, text11, text12))
+def get_cost(text00, text01, text02, text10, text11, text12):
     texts = [DataItem(text00, text01, text02),
              DataItem(text10, text11, text12)]
     xs = list(map(pack_sd, texts))
 
-    cost = [[calc_cost(x_i, x_j) for x_j in xs[1]] for x_i in xs[0]]
-    return Munkres().compute(cost)
+    return np.array([[calc_cost(x_i, x_j) for x_j in xs[1]] for x_i in xs[0]])
 
 
-batch_get_match = batchize(get_match)
+def get_match(text00, text01, text02, text10, text11, text12):
+    return Munkres().compute(get_cost(text00, text01, text02, text10, text11, text12))
+
+
+batch_get_match = batchize(strip_wrapper(get_match))
 
 
 def main():
