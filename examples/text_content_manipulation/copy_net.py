@@ -7,7 +7,7 @@ import texar as tx
 
 
 class CopyNetWrapperState(collections.namedtuple(
-    "CopyNetWrapperState", ("cell_state", "time", "last_ids", "copy_probs"))):
+    "CopyNetWrapperState", ("cell_state", "time", "last_ids", "copy_probs", "Zs"))):
 
     def clone(self, **kwargs):
         def with_same_shape(old, new):
@@ -86,6 +86,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         exp_generate_score = tf.exp(generate_score)
         sumexp_generate_score = tf.reduce_sum(exp_generate_score, 1)
         Z = sumexp_generate_score
+        Zs = [sumexp_generate_score]
 
         # copy from memory
         copy_scores = self._get_copy_scores(outputs)
@@ -97,6 +98,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         for exp_copy_score in exp_copy_scores:
             sumexp_copy_score = tf.reduce_sum(exp_copy_score, 1)
             Z = Z + sumexp_copy_score
+            Zs.append(sumexp_copy_score)
 
         Z_ = tf.expand_dims(Z, 1)
 
@@ -130,7 +132,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         state = CopyNetWrapperState(
             cell_state=cell_state,
             time=state.time+1, last_ids=last_ids,
-            copy_probs=copy_probs)
+            copy_probs=copy_probs,
+            Zs=Zs)
         outputs = tf.cast(outputs, tf.float32)
         return outputs, state
 
@@ -146,6 +149,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             last_ids=tf.TensorShape([]),
             copy_probs=[tf.shape(memory_ids)[1] for memory_ids, _, _ in
                        self._memory_ids_states_lengths],
+            Zs=[tf.TensorShape([]) for _ in range(len(self._memory_ids_states_lengths)+1)],
         )
 
     @property
@@ -167,4 +171,5 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             return CopyNetWrapperState(
                 cell_state=cell_state,
                 time=tf.zeros([], dtype=tf.int64), last_ids=last_ids,
-                copy_probs=copy_probs)
+                copy_probs=copy_probs,
+                Zs=[tf.zeros([batch_size], tf.float64) for _ in range(len(self._memory_ids_states_lengths)+1)])
