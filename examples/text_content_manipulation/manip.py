@@ -638,6 +638,18 @@ def main():
                                 max=np.max(prob),
                                 argmax=text[np.argmax(prob)],
                             ))
+
+                            for text_length, token in enumerate(text):
+                                if token == '<EOS>':
+                                    break
+                            else:
+                                text_length += 1
+
+                            text = text[:text_length]
+
+                            print(' '.join(
+                                map('{0[0]}={0[1]}'.format,
+                                    zip(text, map('{:.2f}'.format, prob)))))
                         print('result: {}'.format(texts["y^"][step]))
 
                 step = tf.train.global_step(sess, global_step)
