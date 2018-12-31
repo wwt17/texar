@@ -645,10 +645,11 @@ def main():
                                 text_length += 1
 
                             text = text[:text_length]
+                            softmax_prob = prob / np.sum(prob)
 
                             print(' '.join(
                                 map('{0[0]}={0[1]}'.format,
-                                    zip(text, map('{:.2f}'.format, prob)))))
+                                    zip(text, map('{:.2f}'.format, softmax_prob)))))
                         print('result: {}'.format(texts["y^"][step]))
 
                 step = tf.train.global_step(sess, global_step)
