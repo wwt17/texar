@@ -591,38 +591,54 @@ def main():
 
         while True:
             try:
-                loss, summary, lengths, copy_probs, Zs, entry_texts, sent_ref_texts, sent_texts, gen_texts = sess.run((
+                loss, summary, lengths, copy_probs, Zs, batch, gen_texts = sess.run((
                         train_op, summary_op, greedy_lengths,
                         greedy_outputs.cell_state.copy_probs,
                         greedy_outputs.cell_state.Zs,
-                        data_batch['entry_text'][:, 1:],
-                        data_batch['sent_ref_text'][:, 1:],
-                        data_batch['sent_text'][:, 1:],
+                        data_batch,
                         vocab.map_ids_to_tokens(greedy_outputs.sample_id),
                     ), feed_dict)
+                entry_texts = batch['entry_text'][:, 1:]
+                entry_ref_texts = batch['entry_ref_text'][:, 1:]
+                sent_texts = batch['sent_text'][:, 1:]
+                sent_ref_texts = batch['sent_ref_text'][:, 1:]
+                all_name_texts = [
+                    ("x", entry_texts),
+                    ("x'", entry_ref_texts),
+                    ("y", sent_texts),
+                    ("y'", sent_ref_texts),
+                    ("y^", gen_texts),
+                ]
+                text_names, all_texts = map(list, zip(*all_name_texts))
                 cnt = len(copy_probs)
-                for _ in zip(*([lengths] + copy_probs + Zs + [entry_texts, sent_ref_texts, sent_texts, gen_texts])):
-                    steps, _, texts = _[0], _[1:-4], _[-4:]
-                    texts = list(texts)
-                    texts[3] = texts[3][:steps]
-                    for name, text in zip(("x", "y'", "y", "y^"), texts):
-                        print("{:<2}: {}".format(name, ' '.join(text)))
-                    copy_texts = []
+                for _ in zip(*([lengths] + copy_probs + Zs + all_texts)):
+                    steps, _, texts = _[0], _[1:-len(all_texts)], _[-len(all_texts):]
+                    texts = dict(zip(text_names, texts))
+                    texts["y^"] = texts["y^"][:steps]
+                    for name in text_names:
+                        print("{:<2}: {}".format(name, ' '.join(texts[name])))
+                    copy_names = []
                     if FLAGS.copy_y_:
-                        copy_texts.append(texts[1])
+                        copy_names.append("y'")
                     if FLAGS.copy_x:
-                        copy_texts.append(texts[0])
+                        copy_names.append("x")
                     if FLAGS.sd_path:
-                        copy_texts.append(texts[1])
+                        copy_names.append("y'")
+                    copy_texts = [texts[name] for name in copy_names]
                     print('decode steps: {}'.format(steps))
                     for step, __ in enumerate(zip(*_)):
                         if step >= steps:
                             break
                         probs, zs = __[:cnt], __[cnt:]
-                        #print('target: {}'.format(target_texts[step]))
                         print('zs: {}'.format(' '.join(map('{:.2f}'.format, zs))))
-                        for prob, text in zip(probs, copy_texts):
-                            print('{2:.2f}\t{1:.2f}\t{0}'.format(text[np.argmax(prob)], np.max(prob), np.sum(prob)))
+                        for name, prob, text in zip(copy_names, probs, copy_texts):
+                            print('{name:<2}: {sum:.2f}\t{max:.2f}\t{argmax}'.format(
+                                name=name,
+                                sum=np.sum(prob),
+                                max=np.max(prob),
+                                argmax=text[np.argmax(prob)],
+                            ))
+                        print('result: {}'.format(texts["y^"][step]))
 
                 step = tf.train.global_step(sess, global_step)
 
