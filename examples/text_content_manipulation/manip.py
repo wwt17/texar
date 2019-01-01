@@ -600,11 +600,15 @@ def main():
                     ), feed_dict)
                 entry_texts = batch['entry_text'][:, 1:]
                 entry_ref_texts = batch['entry_ref_text'][:, 1:]
+                label_texts = batch['attribute_text'][:, 1:]
+                label_ref_texts = batch['attribute_ref_text'][:, 1:]
                 sent_texts = batch['sent_text'][:, 1:]
                 sent_ref_texts = batch['sent_ref_text'][:, 1:]
                 all_name_texts = [
                     ("x", entry_texts),
                     ("x'", entry_ref_texts),
+                    ("l", label_texts),
+                    ("l'", label_ref_texts),
                     ("y", sent_texts),
                     ("y'", sent_ref_texts),
                     ("y^", gen_texts),
