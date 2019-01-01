@@ -591,13 +591,19 @@ def main():
 
         while True:
             try:
-                loss, summary, lengths, copy_probs, Zs, batch, gen_texts = sess.run((
-                        train_op, summary_op, greedy_lengths,
-                        greedy_outputs.cell_state.copy_probs,
-                        greedy_outputs.cell_state.Zs,
+                loss, summary, outputs, lengths, batch, gen_texts = sess.run((
+                        train_op, summary_op, greedy_outputs, greedy_lengths,
                         data_batch,
                         vocab.map_ids_to_tokens(greedy_outputs.sample_id),
                     ), feed_dict)
+                copy_probs = outputs.cell_state.copy_probs
+                Zs = outputs.cell_state.Zs
+                if FLAGS.attn:
+                    attn = outputs.cell_state.cell_state.alignments
+
+                maxlen_y_ = batch['sent_ref_text'].shape[-1]
+                maxlen_x = batch['entry_text'].shape[-1]
+
                 entry_texts = batch['entry_text'][:, 1:]
                 entry_ref_texts = batch['entry_ref_text'][:, 1:]
                 label_texts = batch['attribute_text'][:, 1:]
@@ -615,12 +621,18 @@ def main():
                 ]
                 text_names, all_texts = map(list, zip(*all_name_texts))
                 cnt = len(copy_probs)
-                for _ in zip(*([lengths] + copy_probs + Zs + all_texts)):
+                for _ in zip(*([lengths] + ([attn] if FLAGS.attn else []) + copy_probs + Zs + all_texts)):
                     steps, _, texts = _[0], _[1:-len(all_texts)], _[-len(all_texts):]
+
+                    if FLAGS.attn:
+                        attn_ = _[0]
+                        assert attn_.shape[-1] == maxlen_y_ + maxlen_x - 2, "attn_.shape[-1] = {}, maxlen_y_ = {}, maxlen_x = {}".format(attn_.shape[-1], maxlen_y_, maxlen_x)
+
                     texts = dict(zip(text_names, texts))
                     texts["y^"] = texts["y^"][:steps]
                     for name in text_names:
                         print("{:<2}: {}".format(name, ' '.join(texts[name])))
+
                     copy_names = []
                     if FLAGS.copy_y_:
                         copy_names.append("y'")
@@ -629,14 +641,26 @@ def main():
                     if FLAGS.sd_path:
                         copy_names.append("y'")
                     copy_texts = [texts[name] for name in copy_names]
+
                     print('decode steps: {}'.format(steps))
                     for step, __ in enumerate(zip(*_)):
                         if step >= steps:
                             break
+                        if FLAGS.attn:
+                            attn__, __ = __[0], __[1:]
+                            attn_yy_, attn_yx = attn__[:maxlen_y_], attn__[maxlen_y_:]
+                            attn_yy_ = attn_yy_[1:]
+                            for name0, name1, att in [
+                                    ("y", "y'", attn_yy_),
+                                    ("y", "x", attn_yx)]:
+                                print("{:<2s} - {:<2s}: ".format(name0, name1), end='')
+                                text = texts[name1]
+                                print(' '.join(map('{0[0]}={0[1]}'.format,
+                                                   zip(text, map('{:.2f}'.format, att)))))
                         probs, zs = __[:cnt], __[cnt:]
                         print('zs: {}'.format(' '.join(map('{:.2f}'.format, zs))))
                         for name, prob, text in zip(copy_names, probs, copy_texts):
-                            print('{name:<2}: {sum:.2f}\t{max:.2f}\t{argmax}'.format(
+                            print('{name:<2s}: {sum:.2f}\t{max:.2f}\t{argmax}'.format(
                                 name=name,
                                 sum=np.sum(prob),
                                 max=np.max(prob),
