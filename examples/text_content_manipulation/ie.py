@@ -46,13 +46,15 @@ def get_precrec(
 
     pred_file = "{}-tuples.txt".format(inter_file)
     gold_items, pred_items = map(get_items, (gold_file, pred_file))
-    return calc_precrec(gold_items, pred_items)
+    with open("{}.res.txt".format(gen_file), "w") as itemwise_outfile:
+        return calc_precrec(gold_items, pred_items,
+                            itemwise_outfile=itemwise_outfile)
 
 
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser()
-    argparser.add_argument("--gold_file")
-    argparser.add_argument("--gen_file")
+    argparser.add_argument("--gold_file", default=os.path.join("nba_data", "gold.test.txt"))
+    argparser.add_argument("gen_file")
     argparser.add_argument("--inter_file", default="")
     argparser.add_argument("--gpuid", type=int, default=0)
     args = argparser.parse_args()

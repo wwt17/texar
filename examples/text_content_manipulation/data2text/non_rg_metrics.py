@@ -79,7 +79,13 @@ def get_items(fi):
                     line.strip().split())))),
             f))
 
-def calc_precrec(gold_items, pred_items):
+def divide_or_const(a, b, c=0.):
+    try:
+        return a / b
+    except ZeroDivisionError:
+        return c
+
+def calc_precrec(gold_items, pred_items, itemwise_outfile=None):
     total_tp, total_pred, total_gold = 0, 0, 0
     for gold_item_list, pred_item_list in zip(gold_items, pred_items):
         tp = sum(1 for pred_item in pred_item_list if any(
@@ -87,6 +93,13 @@ def calc_precrec(gold_items, pred_items):
         total_tp += tp
         total_pred += len(pred_item_list)
         total_gold += len(gold_item_list)
+        if itemwise_outfile is not None:
+            print('{tp}\t{prec:.6f}\t{rec:.6f}'.format(
+                      tp=tp,
+                      prec=divide_or_const(tp, len(pred_item_list)),
+                      rec=divide_or_const(tp, len(gold_item_list))),
+                  file=itemwise_outfile)
+
     avg_prec = total_tp / total_pred
     avg_rec = total_tp / total_gold
     print("total_tp: {} total_pred: {} total_gold: {}".format(
