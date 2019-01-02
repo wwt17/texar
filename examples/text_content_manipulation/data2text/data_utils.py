@@ -589,7 +589,7 @@ def extract_sentence_data(outfile, path="rotowire"):
                 write_data_to_line(data, of)
 
 
-def prep_generated_data(genfile, dict_pfx, outfile, train_file, val_file, backup=False):
+def prep_generated_data(genfile, dict_pfx, outfile, train_file, val_file, rec_outfile=None, backup=False):
     # recreate vocab and labeldict
     def read_dict(s):
         d = {}
@@ -620,11 +620,13 @@ def prep_generated_data(genfile, dict_pfx, outfile, train_file, val_file, backup
     # extract ent-num pairs from generated sentence
     nugz = []  # to hold (sentence_tokens, [rels]) tuples
     if not backup:
+        gold_stats = []
         for entry, summ in zip(valdata, gens):
             gold_rels = []
             for rel in entry:
                 if rel[1] not in ("TEAM_NAME", "PLAYER_NAME"):
                     gold_rels.append((rel[2], int(rel[0]), rel[1]))
+            gold_matched = [0 for _ in gold_rels]
 
             sent = summ.split()
             ents = extract_entities(sent, all_ents, prons)
@@ -633,13 +635,24 @@ def prep_generated_data(genfile, dict_pfx, outfile, train_file, val_file, backup
             for ent in ents:
                 for num in nums:
                     match = False
-                    for rel in gold_rels:
+                    for rel_i, rel in enumerate(gold_rels):
                         if ent[2] == rel[0] and num[2] == rel[1]:
                             match = True
+                            gold_matched[rel_i] = 1
                             extracted_rels.append(Rel(ent, num, rel[2], None))
                     if not match:
                         extracted_rels.append(Rel(ent, num, 'NONE', None))
             nugz.append((sent, extracted_rels))
+
+            gold_stats.append((len(gold_rels), sum(gold_matched)))
+
+        if rec_outfile is not None:
+            print('{}\t{}'.format('gold_n', 'gold_match_n'), file=rec_outfile)
+            for n, m in gold_stats:
+                print('{}\t{}'.format(n, m), file=rec_outfile)
+        gold_n, gold_match_n = zip(*gold_stats)
+        print('gold recall: {:.6f}'.format(float(sum(gold_match_n)) / sum(gold_n)))
+
     else:
         sent_reset_indices = {0}  # sentence indices where a box/story is reset
         for entry, summ in zip(valdata, gens):
