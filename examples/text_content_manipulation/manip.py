@@ -34,7 +34,8 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "expr_name is used.")
 flags.DEFINE_boolean("copy_x", False, "Whether to copy from x.")
 flags.DEFINE_boolean("copy_y_", False, "Whether to copy from y'.")
-flags.DEFINE_boolean("attn", False, "Whether to use attention.")
+flags.DEFINE_boolean("attn_x", False, "Whether to attend x.")
+flags.DEFINE_boolean("attn_y_", False, "Whether to attend y'.")
 flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
 flags.DEFINE_float("sd_path_multiplicator", 1., "Structured data path multiplicator.")
 flags.DEFINE_float("sd_path_addend", 0., "Structured data path addend.")
@@ -44,6 +45,9 @@ flags.DEFINE_boolean("verbose", False, "verbose.")
 flags.DEFINE_boolean("eval_ie", False, "Whether evaluate IE.")
 flags.DEFINE_integer("eval_ie_gpuid", 0, "ID of GPU on which IE runs.")
 FLAGS = flags.FLAGS
+
+copy_flag = FLAGS.copy_x or FLAGS.copy_y_
+attn_flag = FLAGS.attn_x or FLAGS.attn_y_
 
 if FLAGS.output_align:
     FLAGS.align = True
@@ -212,22 +216,21 @@ def build_model(data_batch, data):
 
     def get_decoder(cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
                     beam_width=None):
-        copy_flag = FLAGS.copy_x or FLAGS.copy_y_
         output_layer_params = \
             {'output_layer': tf.identity} if copy_flag else \
             {'vocab_size': vocab.size}
 
-        if FLAGS.attn: # attention
-            if y__ref_flag is not None and x_ref_flag is not None:
+        if attn_flag: # attention
+            if FLAGS.attn_x and FLAGS.attn_y_:
                 memory = tf.concat(
                     [sent_enc_outputs[y__ref_flag],
                      sd_enc_outputs[x_ref_flag]],
                     axis=1)
                 memory_sequence_length = None
-            elif y__ref_flag is not None:
+            elif FLAGS.attn_y_:
                 memory = sent_enc_outputs[y__ref_flag]
                 memory_sequence_length = sent_sequence_length[y__ref_flag]
-            elif x_ref_flag is not None:
+            elif FLAGS.attn_x:
                 memory = sd_enc_outputs[x_ref_flag]
                 memory_sequence_length = sd_sequence_length[x_ref_flag]
             else:
