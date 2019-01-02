@@ -40,6 +40,15 @@ __all__ = [
     "AttentionRNNDecoder"
 ]
 
+
+def get_dtype(t):
+    if isinstance(t, tf.Tensor):
+        return t.dtype
+    if isinstance(t, (list, tuple)):
+        return nest.map_structure(get_dtype, t)
+    return dtype
+
+
 class BasicRNNDecoderOutput(
         collections.namedtuple("BasicRNNDecoderOutput",
                                ("logits", "sample_id", "cell_output", "cell_state"))):
@@ -277,12 +286,6 @@ class BasicRNNDecoder(RNNDecoderBase):
         # containing the input_state's first component's dtype.
         # Return that structure and the sample_ids_dtype from the helper.
         dtype = nest.flatten(self._initial_state)[0].dtype
-        def get_dtype(t):
-            if isinstance(t, tf.Tensor):
-                return t.dtype
-            if isinstance(t, (list, tuple)):
-                return nest.map_structure(get_dtype, t)
-            return dtype
         return BasicRNNDecoderOutput(
             logits=nest.map_structure(lambda _: dtype, self._rnn_output_size()),
             sample_id=self._helper.sample_ids_dtype,
@@ -640,8 +643,7 @@ class AttentionRNNDecoder(RNNDecoderBase):
             sample_id=self._helper.sample_ids_dtype,
             cell_output=nest.map_structure(
                 lambda _: dtype, self._cell.output_size),
-            cell_state=nest.map_structure(
-                lambda _: dtype, self._cell.state_size),
+            cell_state=get_dtype(self._cell.zero_state(1, tf.float32)),
             attention_scores=nest.map_structure(
                 lambda _: dtype, self._alignments_size()),
             attention_context=nest.map_structure(

@@ -34,7 +34,8 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "expr_name is used.")
 flags.DEFINE_boolean("copy_x", False, "Whether to copy from x.")
 flags.DEFINE_boolean("copy_y_", False, "Whether to copy from y'.")
-flags.DEFINE_boolean("attn", False, "Whether to use attention.")
+flags.DEFINE_boolean("attn_x", False, "Whether to attend x.")
+flags.DEFINE_boolean("attn_y_", False, "Whether to attend y'.")
 flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
 flags.DEFINE_float("sd_path_multiplicator", 1., "Structured data path multiplicator.")
 flags.DEFINE_float("sd_path_addend", 0., "Structured data path addend.")
@@ -44,6 +45,9 @@ flags.DEFINE_boolean("verbose", False, "verbose.")
 flags.DEFINE_boolean("eval_ie", False, "Whether evaluate IE.")
 flags.DEFINE_integer("eval_ie_gpuid", 0, "ID of GPU on which IE runs.")
 FLAGS = flags.FLAGS
+
+copy_flag = FLAGS.copy_x or FLAGS.copy_y_
+attn_flag = FLAGS.attn_x or FLAGS.attn_y_
 
 if FLAGS.output_align:
     FLAGS.align = True
@@ -211,22 +215,21 @@ def build_model(data_batch, data):
 
     def get_decoder(cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
                     beam_width=None):
-        copy_flag = FLAGS.copy_x or FLAGS.copy_y_
         output_layer_params = \
             {'output_layer': tf.identity} if copy_flag else \
             {'vocab_size': vocab.size}
 
-        if FLAGS.attn: # attention
-            if y__ref_flag is not None and x_ref_flag is not None:
+        if attn_flag: # attention
+            if FLAGS.attn_x and FLAGS.attn_y_:
                 memory = tf.concat(
                     [sent_enc_outputs[y__ref_flag],
                      sd_enc_outputs[x_ref_flag]],
                     axis=1)
                 memory_sequence_length = None
-            elif y__ref_flag is not None:
+            elif FLAGS.attn_y_:
                 memory = sent_enc_outputs[y__ref_flag]
                 memory_sequence_length = sent_sequence_length[y__ref_flag]
-            elif x_ref_flag is not None:
+            elif FLAGS.attn_x:
                 memory = sd_enc_outputs[x_ref_flag]
                 memory_sequence_length = sd_sequence_length[x_ref_flag]
             else:
@@ -590,66 +593,105 @@ def main():
 
         while True:
             try:
-                loss, summary, lengths, copy_probs, Zs, batch, gen_texts = sess.run((
-                        train_op, summary_op, greedy_lengths,
-                        greedy_outputs.cell_state.copy_probs,
-                        greedy_outputs.cell_state.Zs,
+                loss, summary, outputs, lengths, batch, gen_texts = sess.run((
+                        train_op, summary_op, greedy_outputs, greedy_lengths,
                         data_batch,
                         vocab.map_ids_to_tokens(greedy_outputs.sample_id),
                     ), feed_dict)
+
+                cell_state = outputs.cell_state
+
+                if copy_flag:
+                    copy_probs = cell_state.copy_probs
+                    Zs = cell_state.Zs
+                    cnt = len(copy_probs)
+                    cell_state = cell_state.cell_state
+
+                if FLAGS.attn:
+                    attn = cell_state.alignments
+
+                maxlen_y_ = batch['sent_ref_text'].shape[-1]
+                maxlen_x = batch['entry_text'].shape[-1]
+
                 entry_texts = batch['entry_text'][:, 1:]
                 entry_ref_texts = batch['entry_ref_text'][:, 1:]
+                label_texts = batch['attribute_text'][:, 1:]
+                label_ref_texts = batch['attribute_ref_text'][:, 1:]
                 sent_texts = batch['sent_text'][:, 1:]
                 sent_ref_texts = batch['sent_ref_text'][:, 1:]
                 all_name_texts = [
                     ("x", entry_texts),
                     ("x'", entry_ref_texts),
+                    ("l", label_texts),
+                    ("l'", label_ref_texts),
                     ("y", sent_texts),
                     ("y'", sent_ref_texts),
                     ("y^", gen_texts),
                 ]
                 text_names, all_texts = map(list, zip(*all_name_texts))
-                cnt = len(copy_probs)
-                for _ in zip(*([lengths] + copy_probs + Zs + all_texts)):
+                for _ in zip(*([lengths] + ([attn] if FLAGS.attn else []) + (copy_probs + Zs if copy_flag else []) + all_texts)):
                     steps, _, texts = _[0], _[1:-len(all_texts)], _[-len(all_texts):]
+
+                    if FLAGS.attn:
+                        attn_ = _[0]
+                        assert attn_.shape[-1] == maxlen_y_ + maxlen_x - 2, "attn_.shape[-1] = {}, maxlen_y_ = {}, maxlen_x = {}".format(attn_.shape[-1], maxlen_y_, maxlen_x)
+
                     texts = dict(zip(text_names, texts))
                     texts["y^"] = texts["y^"][:steps]
                     for name in text_names:
                         print("{:<2}: {}".format(name, ' '.join(texts[name])))
-                    copy_names = []
-                    if FLAGS.copy_y_:
-                        copy_names.append("y'")
-                    if FLAGS.copy_x:
-                        copy_names.append("x")
-                    if FLAGS.sd_path:
-                        copy_names.append("y'")
-                    copy_texts = [texts[name] for name in copy_names]
+
+                    if copy_flag:
+                        copy_names = []
+                        if FLAGS.copy_y_:
+                            copy_names.append("y'")
+                        if FLAGS.copy_x:
+                            copy_names.append("x")
+                        if FLAGS.sd_path:
+                            copy_names.append("y'")
+                        copy_texts = [texts[name] for name in copy_names]
+
                     print('decode steps: {}'.format(steps))
                     for step, __ in enumerate(zip(*_)):
                         if step >= steps:
                             break
-                        probs, zs = __[:cnt], __[cnt:]
-                        print('zs: {}'.format(' '.join(map('{:.2f}'.format, zs))))
-                        for name, prob, text in zip(copy_names, probs, copy_texts):
-                            print('{name:<2}: {sum:.2f}\t{max:.2f}\t{argmax}'.format(
-                                name=name,
-                                sum=np.sum(prob),
-                                max=np.max(prob),
-                                argmax=text[np.argmax(prob)],
-                            ))
 
-                            for text_length, token in enumerate(text):
-                                if token == '<EOS>':
-                                    break
-                            else:
-                                text_length += 1
+                        if FLAGS.attn:
+                            attn__, __ = __[0], __[1:]
+                            attn_yy_, attn_yx = attn__[:maxlen_y_], attn__[maxlen_y_:]
+                            attn_yy_ = attn_yy_[1:]
+                            for name0, name1, att in [
+                                    ("y", "y'", attn_yy_),
+                                    ("y", "x", attn_yx)]:
+                                print("{:<2s} - {:<2s}: ".format(name0, name1), end='')
+                                text = texts[name1]
+                                print(' '.join(map('{0[0]}={0[1]}'.format,
+                                                   zip(text, map('{:.2f}'.format, att)))))
 
-                            text = text[:text_length]
-                            softmax_prob = prob / np.sum(prob)
+                        if copy_flag:
+                            probs, zs = __[:cnt], __[cnt:]
+                            print('zs: {}'.format(' '.join(map('{:.2f}'.format, zs))))
+                            for name, prob, text in zip(copy_names, probs, copy_texts):
+                                print('{name:<2s}: {sum:.2f}\t{max:.2f}\t{argmax}'.format(
+                                    name=name,
+                                    sum=np.sum(prob),
+                                    max=np.max(prob),
+                                    argmax=text[np.argmax(prob)],
+                                ))
 
-                            print(' '.join(
-                                map('{0[0]}={0[1]}'.format,
-                                    zip(text, map('{:.2f}'.format, softmax_prob)))))
+                                for text_length, token in enumerate(text):
+                                    if token == '<EOS>':
+                                        break
+                                else:
+                                    text_length += 1
+
+                                text = text[:text_length]
+                                softmax_prob = prob / np.sum(prob)
+
+                                print(' '.join(
+                                    map('{0[0]}={0[1]}'.format,
+                                        zip(text, map('{:.2f}'.format, softmax_prob)))))
+
                         print('result: {}'.format(texts["y^"][step]))
 
                 step = tf.train.global_step(sess, global_step)
