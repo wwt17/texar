@@ -45,6 +45,8 @@ flags.DEFINE_boolean("eval_ie", False, "Whether evaluate IE.")
 flags.DEFINE_integer("eval_ie_gpuid", 0, "ID of GPU on which IE runs.")
 FLAGS = flags.FLAGS
 
+copy_flag = FLAGS.copy_x or FLAGS.copy_y_
+
 if FLAGS.output_align:
     FLAGS.align = True
 
@@ -212,7 +214,6 @@ def build_model(data_batch, data):
 
     def get_decoder(cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
                     beam_width=None):
-        copy_flag = FLAGS.copy_x or FLAGS.copy_y_
         output_layer_params = \
             {'output_layer': tf.identity} if copy_flag else \
             {'vocab_size': vocab.size}
@@ -596,10 +597,17 @@ def main():
                         data_batch,
                         vocab.map_ids_to_tokens(greedy_outputs.sample_id),
                     ), feed_dict)
-                copy_probs = outputs.cell_state.copy_probs
-                Zs = outputs.cell_state.Zs
+
+                cell_state = outputs.cell_state
+
+                if copy_flag:
+                    copy_probs = cell_state.copy_probs
+                    Zs = cell_state.Zs
+                    cnt = len(copy_probs)
+                    cell_state = cell_state.cell_state
+
                 if FLAGS.attn:
-                    attn = outputs.cell_state.cell_state.alignments
+                    attn = cell_state.alignments
 
                 maxlen_y_ = batch['sent_ref_text'].shape[-1]
                 maxlen_x = batch['entry_text'].shape[-1]
@@ -620,8 +628,7 @@ def main():
                     ("y^", gen_texts),
                 ]
                 text_names, all_texts = map(list, zip(*all_name_texts))
-                cnt = len(copy_probs)
-                for _ in zip(*([lengths] + ([attn] if FLAGS.attn else []) + copy_probs + Zs + all_texts)):
+                for _ in zip(*([lengths] + ([attn] if FLAGS.attn else []) + (copy_probs + Zs if copy_flag else []) + all_texts)):
                     steps, _, texts = _[0], _[1:-len(all_texts)], _[-len(all_texts):]
 
                     if FLAGS.attn:
@@ -633,19 +640,21 @@ def main():
                     for name in text_names:
                         print("{:<2}: {}".format(name, ' '.join(texts[name])))
 
-                    copy_names = []
-                    if FLAGS.copy_y_:
-                        copy_names.append("y'")
-                    if FLAGS.copy_x:
-                        copy_names.append("x")
-                    if FLAGS.sd_path:
-                        copy_names.append("y'")
-                    copy_texts = [texts[name] for name in copy_names]
+                    if copy_flag:
+                        copy_names = []
+                        if FLAGS.copy_y_:
+                            copy_names.append("y'")
+                        if FLAGS.copy_x:
+                            copy_names.append("x")
+                        if FLAGS.sd_path:
+                            copy_names.append("y'")
+                        copy_texts = [texts[name] for name in copy_names]
 
                     print('decode steps: {}'.format(steps))
                     for step, __ in enumerate(zip(*_)):
                         if step >= steps:
                             break
+
                         if FLAGS.attn:
                             attn__, __ = __[0], __[1:]
                             attn_yy_, attn_yx = attn__[:maxlen_y_], attn__[maxlen_y_:]
@@ -657,27 +666,30 @@ def main():
                                 text = texts[name1]
                                 print(' '.join(map('{0[0]}={0[1]}'.format,
                                                    zip(text, map('{:.2f}'.format, att)))))
-                        probs, zs = __[:cnt], __[cnt:]
-                        print('zs: {}'.format(' '.join(map('{:.2f}'.format, zs))))
-                        for name, prob, text in zip(copy_names, probs, copy_texts):
-                            print('{name:<2s}: {sum:.2f}\t{max:.2f}\t{argmax}'.format(
-                                name=name,
-                                sum=np.sum(prob),
-                                max=np.max(prob),
-                                argmax=text[np.argmax(prob)],
-                            ))
 
-                            for text_length, token in enumerate(text):
-                                if token == '<EOS>':
-                                    break
-                            else:
-                                text_length += 1
+                        if copy_flag:
+                            probs, zs = __[:cnt], __[cnt:]
+                            print('zs: {}'.format(' '.join(map('{:.2f}'.format, zs))))
+                            for name, prob, text in zip(copy_names, probs, copy_texts):
+                                print('{name:<2s}: {sum:.2f}\t{max:.2f}\t{argmax}'.format(
+                                    name=name,
+                                    sum=np.sum(prob),
+                                    max=np.max(prob),
+                                    argmax=text[np.argmax(prob)],
+                                ))
 
-                            text = text[:text_length]
+                                for text_length, token in enumerate(text):
+                                    if token == '<EOS>':
+                                        break
+                                else:
+                                    text_length += 1
 
-                            print(' '.join(
-                                map('{0[0]}={0[1]}'.format,
-                                    zip(text, map('{:.2f}'.format, prob)))))
+                                text = text[:text_length]
+
+                                print(' '.join(
+                                    map('{0[0]}={0[1]}'.format,
+                                        zip(text, map('{:.2f}'.format, prob)))))
+
                         print('result: {}'.format(texts["y^"][step]))
 
                 step = tf.train.global_step(sess, global_step)
