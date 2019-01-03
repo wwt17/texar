@@ -187,7 +187,6 @@ def build_model(data_batch, data):
         sent_enc_outputs, _ = sent_encoder(
             sent_embeds, sequence_length=sent_sequence_length)
         sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
-
         sd_ids = {
             field: data_batch['{}{}_text_ids'.format(field, ref_str)][:, 1:-1]
             for field in sd_fields}
@@ -414,34 +413,85 @@ def build_model(data_batch, data):
         sent_enc_outputs, _ = sent_encoder(
             sent_embeds, sequence_length=sent_sequence_length)
         sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
+        # [?, ?, 769]
 
-        sd_field = sd_fields[0]
-        sd_str = '{}{}'.format(sd_field, ref_str)
-        sd_texts = data_batch['{}_text'.format(sd_str)][:, :-1]
-        sd_ids = data_batch['{}_text_ids'.format(sd_str)]
-        tgt_sd_ids = sd_ids[:, 1:]
-        sd_ids = sd_ids[:, :-1]
-        sd_sequence_length = data_batch['{}_length'.format(sd_str)] - 1
-        sd_embedder = embedders[sd_field]
+        used_sd_fields = ['entry', 'attribute', 'value']
 
+        sd_lengths = []
+        for sd_field in used_sd_fields:
+            sd_str = '{}{}'.format(sd_field, ref_str)
+            sd_ids = data_batch['{}_text_ids'.format(sd_str)]
+            sd_sequence_length = data_batch['{}_length'.format(sd_str)]
+            sd_lengths.append(sd_sequence_length)
+        sd_lengths = tf.stack(sd_lengths)
+        max_sd_length = tf.reduce_max(sd_lengths)
+        print(sd_lengths.shape)
+
+        sd_texts = {}
+        used_input_sd_embeds = []
+        used_target_sd_ids = []
+        for sd_field in used_sd_fields:
+            sd_str = '{}{}'.format(sd_field, ref_str)
+            sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)][:, :-1]
+            sd_ids = data_batch['{}_text_ids'.format(sd_str)]
+            sd_ids = tf.pad(sd_ids, [[0,0], [0, max_sd_length-tf.shape(sd_ids)[1]]])
+            output_sd_ids = sd_ids[:, 1:]
+            input_sd_ids = sd_ids[:, :-1]
+            used_target_sd_ids.append(output_sd_ids)
+            sd_embedder = embedders[sd_field]
+            input_sd_embeds = sd_embedder(input_sd_ids)
+            print('input_sd_embeds:{}'.format(input_sd_embeds.shape))
+            used_input_sd_embeds.append(input_sd_embeds)
+
+        # to concatenate the embeddings, we should pad them to the
+        # same length  
+        input_sd_embeds = tf.concat(used_input_sd_embeds, -1)
+        print('concated input_sd_embeds:{}'.format(input_sd_embeds.shape))
+        print('memory shape:{}'.format(sent_enc_outputs.shape))
         rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
         attention_decoder = tx.modules.AttentionRNNDecoder(
             cell=rnn_cell,
             memory=sent_enc_outputs,
             memory_sequence_length=sent_sequence_length,
-            vocab_size=vocab.size,
+            output_layer=tf.identity,
             hparams=config_model.align_attention_decoder)
-
+        
         tf_outputs, _, tf_sequence_length = attention_decoder(
             decoding_strategy='train_greedy',
-            inputs=sd_ids,
-            embedding=sd_embedder,
-            sequence_length=sd_sequence_length)
+            inputs=input_sd_embeds,
+            embedding=None,
+            sequence_length=(tf.reduce_max(sd_lengths, axis=1)-1))
 
-        loss = tx.losses.sequence_sparse_softmax_cross_entropy(
-            labels=tgt_sd_ids,
-            logits=tf_outputs.logits,
-            sequence_length=sd_sequence_length)
+        attention_scores = tf_outputs.attention_scores
+        cell_outputs = tf_outputs.cell_output
+        print('cell outputs:{}'.format(cell_outputs))
+        losses = []
+        for sd_field in used_sd_fields:
+
+            _projection = tf.layers.Dense(vocab.size, name=sd_field)
+            depth = cell_outputs.shape[-1]
+            ori_shape = tf.shape(cell_outputs)
+            rec_shape = tf.concat([ori_shape[:-1], [vocab.size]], axis=0)
+            _logits = tf.reshape(
+                _projection(tf.reshape(cell_outputs, [-1, depth])),
+                rec_shape)
+
+            sd_str = '{}{}'.format(sd_field, ref_str)
+            sd_ids = data_batch['{}_text_ids'.format(sd_str)]
+            sd_ids = tf.pad(sd_ids, [[0,0], [0, max_sd_length-tf.shape(sd_ids)[1]]])
+            output_sd_ids = sd_ids[:, 1:]
+            sd_sequence_length = data_batch['{}_length'.format(sd_str)] - 1
+            print('_logits.shape:{}'.format(_logits.shape))
+            print('label.shape{}'.format(output_sd_ids.shape))
+            loss = tx.losses.sequence_sparse_softmax_cross_entropy(
+                labels=output_sd_ids,
+                logits=_logits,
+                sequence_length=sd_sequence_length)
+            losses.append(loss)
+        loss = tf.reduce_mean(losses)
+
+        # TODO: modify the inference code to match multiple sd fields 
+        """
 
         start_tokens = tf.ones_like(sd_sequence_length) * vocab.bos_token_id
         end_token = vocab.eos_token_id
@@ -452,7 +502,7 @@ def build_model(data_batch, data):
             end_token=end_token,
             max_decoding_length=config_train.infer_max_decoding_length,
             beam_width=config_train.infer_beam_width)
-
+        """
         return (sent_texts, sent_sequence_length), (sd_texts, sd_sequence_length),\
                loss, tf_outputs, bs_outputs
 
