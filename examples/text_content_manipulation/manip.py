@@ -594,10 +594,11 @@ def main():
 
         while True:
             try:
-                loss, summary, lengths, copy_probs, Zs, batch, gen_texts = sess.run((
+                loss, summary, lengths, copy_probs, Zs, path_weights, batch, gen_texts = sess.run((
                         train_op, summary_op, greedy_lengths,
                         greedy_outputs.cell_state.copy_probs,
                         greedy_outputs.cell_state.Zs,
+                        greedy_outputs.cell_state.path_weights,
                         data_batch,
                         vocab.map_ids_to_tokens(greedy_outputs.sample_id),
                     ), feed_dict)
@@ -614,7 +615,7 @@ def main():
                 ]
                 text_names, all_texts = map(list, zip(*all_name_texts))
                 cnt = len(copy_probs)
-                for _ in zip(*([lengths] + copy_probs + Zs + all_texts)):
+                for _ in zip(*([lengths] + copy_probs + Zs + [path_weights] + all_texts)):
                     steps, _, texts = _[0], _[1:-len(all_texts)], _[-len(all_texts):]
                     texts = dict(zip(text_names, texts))
                     texts["y^"] = texts["y^"][:steps]
@@ -632,6 +633,8 @@ def main():
                     for step, __ in enumerate(zip(*_)):
                         if step >= steps:
                             break
+                        __, path_weights__ = __[:-1], __[-1]
+                        print('path_weights: {}'.format(' '.join(map('{:.2f}'.format, path_weights__))))
                         probs, zs = __[:cnt], __[cnt:]
                         print('zs: {}'.format(' '.join(map('{:.2f}'.format, zs))))
                         for name, prob, text in zip(copy_names, probs, copy_texts):

@@ -7,7 +7,7 @@ import texar as tx
 
 
 class CopyNetWrapperState(collections.namedtuple(
-    "CopyNetWrapperState", ("cell_state", "time", "last_ids", "copy_probs", "Zs"))):
+    "CopyNetWrapperState", ("cell_state", "time", "last_ids", "copy_probs", "Zs", "path_weights"))):
 
     def clone(self, **kwargs):
         def with_same_shape(old, new):
@@ -139,7 +139,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             cell_state=cell_state,
             time=state.time+1, last_ids=last_ids,
             copy_probs=copy_probs,
-            Zs=Zs)
+            Zs=Zs,
+            path_weights=path_weights)
         outputs = tf.cast(outputs, tf.float32)
         return outputs, state
 
@@ -156,6 +157,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             copy_probs=[tf.shape(memory_ids)[1] for memory_ids, _, _ in
                        self._memory_ids_states_lengths],
             Zs=[tf.TensorShape([]) for _ in range(len(self._memory_ids_states_lengths)+1)],
+            path_weights=tf.TensorShape([1 + len(self._memory_ids_states_lengths)])
         )
 
     @property
@@ -178,4 +180,6 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                 cell_state=cell_state,
                 time=tf.zeros([], dtype=tf.int64), last_ids=last_ids,
                 copy_probs=copy_probs,
-                Zs=[tf.zeros([batch_size], tf.float64) for _ in range(len(self._memory_ids_states_lengths)+1)])
+                Zs=[tf.zeros([batch_size], tf.float64) for _ in range(len(self._memory_ids_states_lengths)+1)],
+                path_weights=tf.zeros([batch_size, 1 + len(self._memory_ids_states_lengths)], dtype=tf.float64),
+            )
