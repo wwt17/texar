@@ -425,7 +425,6 @@ def build_model(data_batch, data):
             sd_lengths.append(sd_sequence_length)
         sd_lengths = tf.stack(sd_lengths)
         max_sd_length = tf.reduce_max(sd_lengths)
-        print(sd_lengths.shape)
 
         sd_texts = {}
         used_input_sd_embeds = []
@@ -440,14 +439,11 @@ def build_model(data_batch, data):
             used_target_sd_ids.append(output_sd_ids)
             sd_embedder = embedders[sd_field]
             input_sd_embeds = sd_embedder(input_sd_ids)
-            print('input_sd_embeds:{}'.format(input_sd_embeds.shape))
             used_input_sd_embeds.append(input_sd_embeds)
-
         # to concatenate the embeddings, we should pad them to the
         # same length  
         input_sd_embeds = tf.concat(used_input_sd_embeds, -1)
-        print('concated input_sd_embeds:{}'.format(input_sd_embeds.shape))
-        print('memory shape:{}'.format(sent_enc_outputs.shape))
+        
         rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
         attention_decoder = tx.modules.AttentionRNNDecoder(
             cell=rnn_cell,
@@ -457,20 +453,18 @@ def build_model(data_batch, data):
             hparams=config_model.align_attention_decoder)
 
         _seq_length = tf.reduce_max(sd_lengths, axis=0)-1
-        print('input_sd_embeds: {}'.format(input_sd_embeds.shape))
-        print('_seq_length: {}'.format(_seq_length.shape))
         tf_outputs, _, tf_sequence_length = attention_decoder(
             decoding_strategy='train_greedy',
             inputs=input_sd_embeds,
             embedding=None,
-            sequence_length=(tf.reduce_max(sd_lengths, axis=1)-1))
+            sequence_length=_seq_length)
         cell_outputs = tf_outputs.cell_output
-        print('cell outputs:{}'.format(cell_outputs))
 
-        attention_scores = tf_outputs.attention_scores
+        # TODO: we may use this in the manipulation task
+        # attention_scores = tf_outputs.attention_scores
         losses = []
         for sd_field in used_sd_fields:
-
+            # we can reuse this projection layer by reuse=True
             _projection = tf.layers.Dense(vocab.size, name=sd_field)
             depth = cell_outputs.shape[-1]
             ori_shape = tf.shape(cell_outputs)
@@ -484,8 +478,6 @@ def build_model(data_batch, data):
             sd_ids = tf.pad(sd_ids, [[0,0], [0, max_sd_length-tf.shape(sd_ids)[1]]])
             output_sd_ids = sd_ids[:, 1:]
             sd_sequence_length = data_batch['{}_length'.format(sd_str)] - 1
-            print('_logits.shape:{}'.format(_logits.shape))
-            print('label.shape{}'.format(output_sd_ids.shape))
             loss = tx.losses.sequence_sparse_softmax_cross_entropy(
                 labels=output_sd_ids,
                 logits=_logits,
@@ -494,20 +486,29 @@ def build_model(data_batch, data):
         loss = tf.reduce_mean(losses)
 
         # TODO: modify the inference code to match multiple sd fields 
-        """
 
         start_tokens = tf.ones_like(sd_sequence_length) * vocab.bos_token_id
         end_token = vocab.eos_token_id
-        bs_outputs, _, _ = tx.modules.beam_search_decode(
-            decoder_or_cell=attention_decoder,
-            embedding=sd_embedder,
-            start_tokens=start_tokens,
-            end_token=end_token,
-            max_decoding_length=config_train.infer_max_decoding_length,
-            beam_width=config_train.infer_beam_width)
-        """
+
+        all_bs_outputs = []
+        sd_sequence_lengths = []
+        for sd_field in used_sd_fields:
+            sd_str = '{}{}'.format(sd_field, ref_str)
+            sd_sequence_length = data_batch['{}_length'.format(sd_str)] - 1
+            sd_embedder = embedders[sd_field]
+            _projection = tf.layers.Dense(vocab.size, name=sd_field)
+            bs_outputs, _, _ = tx.modules.beam_search_decode(
+                decoder_or_cell=attention_decoder,
+                embedding=sd_embedder,
+                start_tokens=start_tokens,
+                end_token=end_token,
+                max_decoding_length=config_train.infer_max_decoding_length,
+                beam_width=config_train.infer_beam_width,
+                output_layer=_projection)
+            all_bs_outputs.append(bs_outputs)
+            sd_sequence_lengths.append(sd_sequence_length)
         return (sent_texts, sent_sequence_length), (sd_texts, sd_sequence_length),\
-               loss, tf_outputs, bs_outputs
+               loss, tf_outputs, all_bs_outputs
 
 
     decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
