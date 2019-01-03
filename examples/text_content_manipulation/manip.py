@@ -21,6 +21,7 @@ from utils import *
 from get_xx import get_cost
 from get_xy import get_align
 from ie import get_precrec
+import rnn_decoders
 
 flags = tf.flags
 flags.DEFINE_string("config_data", "config_data_nba", "The data config.")
@@ -234,7 +235,7 @@ def build_model(data_batch, data):
             else:
                 raise Exception(
                     "Must specify either y__ref_flag or x_ref_flag.")
-            attention_decoder = tx.modules.AttentionRNNDecoder(
+            attention_decoder = rnn_decoders.AttentionRNNDecoder(
                 cell=cell,
                 memory=memory,
                 memory_sequence_length=memory_sequence_length,
@@ -332,7 +333,7 @@ def build_model(data_batch, data):
                     kwargs['input_ids'] if tgt_ref_flag is not None else None,
                 get_get_copy_scores=get_get_copy_scores)
 
-        decoder = tx.modules.BasicRNNDecoder(
+        decoder = rnn_decoders.BasicRNNDecoder(
             cell=cell, hparams=config_model.decoder,
             **output_layer_params)
         return decoder
@@ -359,7 +360,7 @@ def build_model(data_batch, data):
         tgt_ref_flag = x_ref_flag
         tgt_str = 'sent{}'.format(ref_strs[tgt_ref_flag])
         sequence_length = data_batch['{}_length'.format(tgt_str)] - 1
-        decoder, tf_outputs, _, _ = get_decoder_and_outputs(
+        decoder, tf_outputs, _, tf_lengths = get_decoder_and_outputs(
             cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
             {'decoding_strategy': 'train_greedy',
              'inputs': sent_embeds[tgt_ref_flag],
@@ -381,14 +382,28 @@ def build_model(data_batch, data):
         loss = tf.reduce_mean(loss, 0)
         losses[loss_name] = loss
 
-        return decoder, tf_outputs, loss
+        return decoder, tf_outputs, tf_lengths, loss
 
+    start_tokens = tf.ones_like(data_batch['sent_length']) * \
+        vocab.bos_token_id
+    end_token = vocab.eos_token_id
+
+    def infer_greedy(cell, y__ref_flag, x_ref_flag):
+        tgt_ref_flag = x_ref_flag
+        tgt_str = 'sent{}'.format(ref_strs[tgt_ref_flag])
+
+        decoder, outputs, _, lengths = get_decoder_and_outputs(
+            cell, y__ref_flag, x_ref_flag, None,
+            {'decoding_strategy': 'infer_greedy',
+             'embedding': embedders['sent'],
+             'start_tokens': start_tokens,
+             'end_token': end_token,
+             'max_decoding_length': config_train.infer_max_decoding_length})
+
+        tgt_sent_ids = data_batch['{}_text_ids'.format(tgt_str)][:, 1:]
+        return decoder, outputs, lengths
 
     def beam_searching(cell, y__ref_flag, x_ref_flag, beam_width):
-        start_tokens = tf.ones_like(data_batch['sent_length']) * \
-            vocab.bos_token_id
-        end_token = vocab.eos_token_id
-
         decoder, bs_outputs, _, _ = get_decoder_and_outputs(
             cell, y__ref_flag, x_ref_flag, None,
             {'embedding': embedders['sent'],
@@ -456,8 +471,8 @@ def build_model(data_batch, data):
                loss, tf_outputs, bs_outputs
 
 
-    decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
-    rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 'REC')
+    decoder, tf_outputs, tf_lengths, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
+    rec_decoder, _, rec_lengths, rec_loss = teacher_forcing(rnn_cell, 1, 1, 'REC')
     if config_train.rec_weight == 0:
         joint_loss = loss
     elif config_train.rec_weight == 1:
@@ -478,7 +493,9 @@ def build_model(data_batch, data):
         name: get_train_op(losses[name], hparams=config_train.train[name])
         for name in config_train.train}
 
-    return train_ops, bs_outputs, \
+    _, greedy_outputs, greedy_lengths = infer_greedy(rnn_cell, 1, 0)
+
+    return train_ops, bs_outputs, tf_outputs, tf_lengths, greedy_outputs, greedy_lengths, \
            align_sents, align_sds, align_tf_outputs, align_bs_outputs
 
 
@@ -491,7 +508,7 @@ def main():
 
     global_step = tf.train.get_or_create_global_step()
 
-    train_ops, bs_outputs, \
+    train_ops, bs_outputs, tf_outputs, tf_lengths, greedy_outputs, greedy_lengths, \
             align_sents, align_sds, align_tf_outputs, align_bs_outputs \
         = build_model(data_batch, datasets['train'])
 
@@ -572,10 +589,115 @@ def main():
             tx.global_mode(): tf.estimator.ModeKeys.TRAIN,
             data_iterator.handle: data_iterator.get_handle(sess, mode),
         }
+        vocab = datasets['train'].vocab('sent')
 
         while True:
             try:
-                loss, summary = sess.run((train_op, summary_op), feed_dict)
+                loss, summary, outputs, lengths, batch, gen_texts = sess.run((
+                        train_op, summary_op, greedy_outputs, greedy_lengths,
+                        data_batch,
+                        vocab.map_ids_to_tokens(greedy_outputs.sample_id),
+                    ), feed_dict)
+
+                cell_state = outputs.cell_state
+
+                if copy_flag:
+                    copy_probs = cell_state.copy_probs
+                    Zs = cell_state.Zs
+                    cnt = len(copy_probs)
+                    cell_state = cell_state.cell_state
+
+                if attn_flag:
+                    attn = cell_state.alignments
+
+                maxlen_y_ = batch['sent_ref_text'].shape[-1]
+                maxlen_x = batch['entry_text'].shape[-1]
+
+                entry_texts = batch['entry_text'][:, 1:]
+                entry_ref_texts = batch['entry_ref_text'][:, 1:]
+                label_texts = batch['attribute_text'][:, 1:]
+                label_ref_texts = batch['attribute_ref_text'][:, 1:]
+                sent_texts = batch['sent_text'][:, 1:]
+                sent_ref_texts = batch['sent_ref_text'][:, 1:]
+                all_name_texts = [
+                    ("x", entry_texts),
+                    ("x'", entry_ref_texts),
+                    ("l", label_texts),
+                    ("l'", label_ref_texts),
+                    ("y", sent_texts),
+                    ("y'", sent_ref_texts),
+                    ("y^", gen_texts),
+                ]
+                text_names, all_texts = map(list, zip(*all_name_texts))
+                for _ in zip(*([lengths] + ([attn] if attn_flag else []) + (copy_probs + Zs if copy_flag else []) + all_texts)):
+                    steps, _, texts = _[0], _[1:-len(all_texts)], _[-len(all_texts):]
+
+                    if attn_flag:
+                        attn_ = _[0]
+                        if FLAGS.attn_y_ and FLAGS.attn_x:
+                            assert attn_.shape[-1] == maxlen_y_ + maxlen_x - 2, "attn_.shape[-1] = {}, maxlen_y_ = {}, maxlen_x = {}".format(attn_.shape[-1], maxlen_y_, maxlen_x)
+                        elif FLAGS.attn_y_:
+                            assert attn_.shape[-1] == maxlen_y_, "attn_.shape[-1] = {}, maxlen_y_ = {}".format(attn_.shape[-1], maxlen_y_)
+                        elif FLAGS.attn_x:
+                            assert attn_.shape[-1] == maxlen_x - 2, "attn_.shape[-1] = {}, maxlen_x = {}".format(attn_.shape[-1], maxlen_x)
+
+                    texts = dict(zip(text_names, texts))
+                    texts["y^"] = texts["y^"][:steps]
+                    for name in text_names:
+                        print("{:<2}: {}".format(name, ' '.join(texts[name])))
+
+                    if copy_flag:
+                        copy_names = []
+                        if FLAGS.copy_y_:
+                            copy_names.append("y'")
+                        if FLAGS.copy_x:
+                            copy_names.append("x")
+                        if FLAGS.sd_path:
+                            copy_names.append("y'")
+                        copy_texts = [texts[name] for name in copy_names]
+
+                    print('decode steps: {}'.format(steps))
+                    for step, __ in enumerate(zip(*_)):
+                        if step >= steps:
+                            break
+
+                        if attn_flag:
+                            attn__, __ = __[0], __[1:]
+                            name_atts = []
+                            if FLAGS.attn_y_:
+                                name_atts.append(("y", "y'", attn__[1:maxlen_y_]))
+                            if FLAGS.attn_x:
+                                name_atts.append(("y", "x", attn__[-(maxlen_x - 2):]))
+                            for name0, name1, att in name_atts:
+                                print("{:<2s} - {:<2s}: ".format(name0, name1), end='')
+                                text = texts[name1]
+                                print(' '.join(map('{0[0]}={0[1]}'.format,
+                                                   zip(text, map('{:.2f}'.format, att)))))
+
+                        if copy_flag:
+                            probs, zs = __[:cnt], __[cnt:]
+                            print('zs: {}'.format(' '.join(map('{:.2f}'.format, zs))))
+                            for name, prob, text in zip(copy_names, probs, copy_texts):
+                                print('{name:<2s}: {sum:.2f}\t{max:.2f}\t{argmax}'.format(
+                                    name=name,
+                                    sum=np.sum(prob),
+                                    max=np.max(prob),
+                                    argmax=text[np.argmax(prob)],
+                                ))
+
+                                for text_length, token in enumerate(text):
+                                    if token == '<EOS>':
+                                        break
+                                else:
+                                    text_length += 1
+
+                                text = text[:text_length]
+
+                                print(' '.join(
+                                    map('{0[0]}={0[1]}'.format,
+                                        zip(text, map('{:.2f}'.format, prob)))))
+
+                        print('result: {}'.format(texts["y^"][step]))
 
                 step = tf.train.global_step(sess, global_step)
 
@@ -716,8 +838,8 @@ def main():
             train_op = train_ops[name]
             summary_op = summary_ops[name]
 
-            val_bleu = _eval_epoch(sess, summary_writer, 'val')
-            test_bleu = _eval_epoch(sess, summary_writer, 'test')
+            val_bleu = 0. # _eval_epoch(sess, summary_writer, 'val')
+            test_bleu = 0. # _eval_epoch(sess, summary_writer, 'test')
 
             step = tf.train.global_step(sess, global_step)
 
