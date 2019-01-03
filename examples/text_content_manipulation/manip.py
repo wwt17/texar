@@ -608,7 +608,7 @@ def main():
                     cnt = len(copy_probs)
                     cell_state = cell_state.cell_state
 
-                if FLAGS.attn:
+                if attn_flag:
                     attn = cell_state.alignments
 
                 maxlen_y_ = batch['sent_ref_text'].shape[-1]
@@ -630,12 +630,17 @@ def main():
                     ("y^", gen_texts),
                 ]
                 text_names, all_texts = map(list, zip(*all_name_texts))
-                for _ in zip(*([lengths] + ([attn] if FLAGS.attn else []) + (copy_probs + Zs if copy_flag else []) + all_texts)):
+                for _ in zip(*([lengths] + ([attn] if attn_flag else []) + (copy_probs + Zs if copy_flag else []) + all_texts)):
                     steps, _, texts = _[0], _[1:-len(all_texts)], _[-len(all_texts):]
 
-                    if FLAGS.attn:
+                    if attn_flag:
                         attn_ = _[0]
-                        assert attn_.shape[-1] == maxlen_y_ + maxlen_x - 2, "attn_.shape[-1] = {}, maxlen_y_ = {}, maxlen_x = {}".format(attn_.shape[-1], maxlen_y_, maxlen_x)
+                        if FLAGS.attn_y_ and FLAGS.attn_x:
+                            assert attn_.shape[-1] == maxlen_y_ + maxlen_x - 2, "attn_.shape[-1] = {}, maxlen_y_ = {}, maxlen_x = {}".format(attn_.shape[-1], maxlen_y_, maxlen_x)
+                        elif FLAGS.attn_y_:
+                            assert attn_.shape[-1] == maxlen_y_, "attn_.shape[-1] = {}, maxlen_y_ = {}".format(attn_.shape[-1], maxlen_y_)
+                        elif FLAGS.attn_x:
+                            assert attn_.shape[-1] == maxlen_x - 2, "attn_.shape[-1] = {}, maxlen_x = {}".format(attn_.shape[-1], maxlen_x)
 
                     texts = dict(zip(text_names, texts))
                     texts["y^"] = texts["y^"][:steps]
@@ -657,13 +662,14 @@ def main():
                         if step >= steps:
                             break
 
-                        if FLAGS.attn:
+                        if attn_flag:
                             attn__, __ = __[0], __[1:]
-                            attn_yy_, attn_yx = attn__[:maxlen_y_], attn__[maxlen_y_:]
-                            attn_yy_ = attn_yy_[1:]
-                            for name0, name1, att in [
-                                    ("y", "y'", attn_yy_),
-                                    ("y", "x", attn_yx)]:
+                            name_atts = []
+                            if FLAGS.attn_y_:
+                                name_atts.append(("y", "y'", attn__[1:maxlen_y_]))
+                            if FLAGS.attn_x:
+                                name_atts.append(("y", "x", attn__[-(maxlen_x - 2):]))
+                            for name0, name1, att in name_atts:
                                 print("{:<2s} - {:<2s}: ".format(name0, name1), end='')
                                 text = texts[name1]
                                 print(' '.join(map('{0[0]}={0[1]}'.format,
