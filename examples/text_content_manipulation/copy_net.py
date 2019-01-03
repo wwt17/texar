@@ -44,6 +44,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self._get_copy_scores = get_get_copy_scores(
                 memory_ids_states_lengths, self._cell.output_size)
             self._projection = tf.layers.Dense(self._vocab_size, use_bias=False)
+            self._path_weights_projection = tf.layers.Dense(
+                1 + len(self._memory_ids_states_lengths), use_bias=False)
 
     def __call__(self, inputs, state, scope=None):
         if not isinstance(state, CopyNetWrapperState):
@@ -79,11 +81,14 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                 memory_ids, memory_states, memory_lengths, copy_prob))
         inputs = tf.concat(inputs, -1)  # y_(t-1)
 
-        # generate mode
         outputs, cell_state = self._cell(inputs, cell_state, scope)
+        path_weights = tf.nn.softmax(self._path_weights_projection(outputs))
+        path_weights = tf.cast(path_weights, tf.float64)
+
+        # generate mode
         generate_score = self._projection(outputs)  # [batch, gen_vocab_size]
         generate_score = tf.cast(generate_score, tf.float64)
-        exp_generate_score = tf.exp(generate_score)
+        exp_generate_score = tf.exp(generate_score) * path_weights[:, 0:1]
         sumexp_generate_score = tf.reduce_sum(exp_generate_score, 1)
         Z = sumexp_generate_score
         Zs = [sumexp_generate_score]
@@ -93,8 +98,9 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         exp_copy_scores = [
             tx.utils.mask_sequences(
                 tf.exp(tf.cast(copy_score, tf.float64)), memory_lengths)
-            for (_, _, memory_lengths), copy_score in
-            zip(self._memory_ids_states_lengths, copy_scores)]
+            * path_weights[:, i+1:i+2]
+            for i, ((_, _, memory_lengths), copy_score) in
+            enumerate(zip(self._memory_ids_states_lengths, copy_scores))]
         for exp_copy_score in exp_copy_scores:
             sumexp_copy_score = tf.reduce_sum(exp_copy_score, 1)
             Z = Z + sumexp_copy_score
