@@ -455,16 +455,19 @@ def build_model(data_batch, data):
             memory_sequence_length=sent_sequence_length,
             output_layer=tf.identity,
             hparams=config_model.align_attention_decoder)
-        
+
+        _seq_length = tf.reduce_max(sd_lengths, axis=0)-1
+        print('input_sd_embeds: {}'.format(input_sd_embeds.shape))
+        print('_seq_length: {}'.format(_seq_length.shape))
         tf_outputs, _, tf_sequence_length = attention_decoder(
             decoding_strategy='train_greedy',
             inputs=input_sd_embeds,
             embedding=None,
             sequence_length=(tf.reduce_max(sd_lengths, axis=1)-1))
-
-        attention_scores = tf_outputs.attention_scores
         cell_outputs = tf_outputs.cell_output
         print('cell outputs:{}'.format(cell_outputs))
+
+        attention_scores = tf_outputs.attention_scores
         losses = []
         for sd_field in used_sd_fields:
 
