@@ -84,24 +84,24 @@ def get_optimistic_saver(ckpt_path, graph=tf.get_default_graph()):
         get_optimistic_restore_variables(ckpt_path, graph=graph))
 
 
-def print_alignment(data, sent, score):
-    print(' ' * 20 + ' '.join(map('{:>12}'.format, data[0])))
-    for j, sent_token in enumerate(sent[0]):
+def print_alignment(data0, data1, data2, sent, score):
+    datas = [data0, data1, data2]
+    for data in datas:
+        print(' ' * 20 + ' '.join(map('{:>12}'.format, data)))
+    for j, sent_token in enumerate(sent):
         print('{:>20}'.format(sent_token) + ' '.join(map(
             lambda x: '{:12.2e}'.format(x) if x != 0 else ' ' * 12,
             score[:, j])))
 
 
-def batch_print_alignment(datas, sents, scores):
-    datas, sents = map(
-        lambda texts_lengths: map(
-            lambda text_length:
-                (text_length[0][:text_length[1]], text_length[1]),
-            zip(*texts_lengths)),
-        (datas, sents))
-    for data, sent, score in zip(datas, sents, scores):
-        score = score[:data[1], :sent[1]]
-        print_alignment(data, sent, score)
+def strip_print_alignment(data0, data1, data2, sent, score):
+    data0, data1, data2, sent = map(
+        strip_special_tokens_of_list, (data0, data1, data2, sent))
+    len_data = len(data0)
+    print_alignment(data0, data1, data2, sent, score[:len_data])
+
+
+batch_print_alignment = batchize(strip_print_alignment)
 
 
 def get_match_align(text00, text01, text02, text10, text11, text12, sent_text):
@@ -401,49 +401,44 @@ def build_model(data_batch, data):
 
 
     def build_align():
+        used_sent_fields = sent_fields
+        sent_field = used_sent_fields[0]
+        used_sd_fields = sd_fields
+        used_fields = sent_fields + sd_fields
         ref_str = ref_strs[1]
-        sent_str = 'sent{}'.format(ref_str)
+        sent_str = '{}{}'.format(sent_field, ref_str)
+
+        # embedders
+        embedders = {
+            name: tx.modules.WordEmbedder(
+                vocab_size=data.vocab(name).size,
+                hparams=config_model.embedders[name])
+            for name in used_fields}
+
         sent_texts = data_batch['{}_text'.format(sent_str)][:, 1:-1]
         sent_ids = data_batch['{}_text_ids'.format(sent_str)][:, 1:-1]
-        #TODO: Here we simply use the embedder previously constructed,
-        #therefore it's shared. We have to construct a new one here if we'd
-        #like to get align on the fly.
-        sent_embeds = embedders['sent'](sent_ids)
+        sent_embeds = embedders[sent_field](sent_ids)
         sent_sequence_length = data_batch['{}_length'.format(sent_str)] - 2
         sent_enc_outputs, _ = sent_encoder(
             sent_embeds, sequence_length=sent_sequence_length)
         sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
-        # [?, ?, 769]
-
-        used_sd_fields = ['entry', 'attribute', 'value']
-
-        sd_lengths = []
-        for sd_field in used_sd_fields:
-            sd_str = '{}{}'.format(sd_field, ref_str)
-            sd_ids = data_batch['{}_text_ids'.format(sd_str)]
-            sd_sequence_length = data_batch['{}_length'.format(sd_str)]
-            sd_lengths.append(sd_sequence_length)
-        sd_lengths = tf.stack(sd_lengths)
-        max_sd_length = tf.reduce_max(sd_lengths)
 
         sd_texts = {}
-        used_input_sd_embeds = []
-        used_target_sd_ids = []
+        input_sd_embeds = {}
+        target_sd_ids = {}
+        sd_sequence_lengths = {}
+
         for sd_field in used_sd_fields:
             sd_str = '{}{}'.format(sd_field, ref_str)
             sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)][:, :-1]
             sd_ids = data_batch['{}_text_ids'.format(sd_str)]
-            sd_ids = tf.pad(sd_ids, [[0,0], [0, max_sd_length-tf.shape(sd_ids)[1]]])
-            output_sd_ids = sd_ids[:, 1:]
-            input_sd_ids = sd_ids[:, :-1]
-            used_target_sd_ids.append(output_sd_ids)
-            sd_embedder = embedders[sd_field]
-            input_sd_embeds = sd_embedder(input_sd_ids)
-            used_input_sd_embeds.append(input_sd_embeds)
-        # to concatenate the embeddings, we should pad them to the
-        # same length  
-        input_sd_embeds = tf.concat(used_input_sd_embeds, -1)
-        
+            input_sd_embeds[sd_field] = embedders[sd_field](sd_ids[:, :-1])
+            target_sd_ids[sd_field] = sd_ids[:, 1:]
+            sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
+
+        input_sd_embeds = tf.concat(
+            [input_sd_embeds[sd_field] for sd_field in used_sd_fields], -1)
+
         rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
         attention_decoder = tx.modules.AttentionRNNDecoder(
             cell=rnn_cell,
@@ -452,63 +447,49 @@ def build_model(data_batch, data):
             output_layer=tf.identity,
             hparams=config_model.align_attention_decoder)
 
-        _seq_length = tf.reduce_max(sd_lengths, axis=0)-1
         tf_outputs, _, tf_sequence_length = attention_decoder(
             decoding_strategy='train_greedy',
             inputs=input_sd_embeds,
             embedding=None,
-            sequence_length=_seq_length)
+            sequence_length=sd_sequence_lengths[used_sd_fields[0]])
         cell_outputs = tf_outputs.cell_output
 
-        # TODO: we may use this in the manipulation task
-        # attention_scores = tf_outputs.attention_scores
+        projection_name = 'align_projection_{}'.format
+
         losses = []
         for sd_field in used_sd_fields:
-            # we can reuse this projection layer by reuse=True
-            _projection = tf.layers.Dense(vocab.size, name=sd_field)
-            depth = cell_outputs.shape[-1]
-            ori_shape = tf.shape(cell_outputs)
-            rec_shape = tf.concat([ori_shape[:-1], [vocab.size]], axis=0)
-            _logits = tf.reshape(
-                _projection(tf.reshape(cell_outputs, [-1, depth])),
-                rec_shape)
-
-            sd_str = '{}{}'.format(sd_field, ref_str)
-            sd_ids = data_batch['{}_text_ids'.format(sd_str)]
-            sd_ids = tf.pad(sd_ids, [[0,0], [0, max_sd_length-tf.shape(sd_ids)[1]]])
-            output_sd_ids = sd_ids[:, 1:]
-            sd_sequence_length = data_batch['{}_length'.format(sd_str)] - 1
+            projection = tf.layers.Dense(
+                data.vocab(sd_field).size,
+                name=projection_name(sd_field))
+            logits = projection(cell_outputs)
             loss = tx.losses.sequence_sparse_softmax_cross_entropy(
-                labels=output_sd_ids,
-                logits=_logits,
-                sequence_length=sd_sequence_length)
+                labels=target_sd_ids[sd_field],
+                logits=logits,
+                sequence_length=sd_sequence_lengths[sd_field])
             losses.append(loss)
-        loss = tf.reduce_mean(losses)
+        loss = tf.reduce_sum(losses)
 
-        # TODO: modify the inference code to match multiple sd fields 
-
-        start_tokens = tf.ones_like(sd_sequence_length) * vocab.bos_token_id
-        end_token = vocab.eos_token_id
-
-        all_bs_outputs = []
-        sd_sequence_lengths = []
+        # TODO: modify the inference code to match multiple sd fields
+        bs_outputs_lengths = {}
         for sd_field in used_sd_fields:
-            sd_str = '{}{}'.format(sd_field, ref_str)
-            sd_sequence_length = data_batch['{}_length'.format(sd_str)] - 1
-            sd_embedder = embedders[sd_field]
-            _projection = tf.layers.Dense(vocab.size, name=sd_field)
-            bs_outputs, _, _ = tx.modules.beam_search_decode(
+            start_tokens = tf.ones_like(sd_sequence_lengths[sd_field]) * \
+                data.vocab(sd_field).bos_token_id
+            end_token = data.vocab(sd_field).eos_token_id
+            projection = tf.layers.Dense(
+                data.vocab(sd_field).size,
+                name=projection_name(sd_field))
+            bs_outputs, _, bs_lengths = tx.modules.beam_search_decode(
                 decoder_or_cell=attention_decoder,
-                embedding=sd_embedder,
+                embedding=embedders[sd_field],
                 start_tokens=start_tokens,
                 end_token=end_token,
                 max_decoding_length=config_train.infer_max_decoding_length,
                 beam_width=config_train.infer_beam_width,
-                output_layer=_projection)
-            all_bs_outputs.append(bs_outputs)
-            sd_sequence_lengths.append(sd_sequence_length)
-        return (sent_texts, sent_sequence_length), (sd_texts, sd_sequence_length),\
-               loss, tf_outputs, all_bs_outputs
+                output_layer=projection)
+            bs_outputs_lengths[sd_field] = (bs_outputs, bs_lengths)
+
+        return (sent_texts, sent_sequence_length), (sd_texts, sd_sequence_lengths),\
+               loss, tf_outputs, bs_outputs_lengths
 
 
     decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
@@ -525,7 +506,7 @@ def build_model(data_batch, data):
     tiled_decoder, bs_outputs = beam_searching(
         rnn_cell, 1, 0, config_train.infer_beam_width)
 
-    align_sents, align_sds, align_loss, align_tf_outputs, align_bs_outputs = \
+    align_sents, align_sds, align_loss, align_tf_outputs, align_bs_outputs_lengths = \
         build_align()
     losses['align'] = align_loss
 
@@ -534,7 +515,7 @@ def build_model(data_batch, data):
         for name in config_train.train}
 
     return train_ops, bs_outputs, \
-           align_sents, align_sds, align_tf_outputs, align_bs_outputs
+           align_sents, align_sds, align_tf_outputs, align_bs_outputs_lengths
 
 
 def main():
@@ -547,7 +528,7 @@ def main():
     global_step = tf.train.get_or_create_global_step()
 
     train_ops, bs_outputs, \
-            align_sents, align_sds, align_tf_outputs, align_bs_outputs \
+            align_sents, align_sds, align_tf_outputs, align_bs_outputs_lengths \
         = build_model(data_batch, datasets['train'])
 
     summary_ops = {
@@ -602,16 +583,21 @@ def main():
             data_iterator.handle: data_iterator.get_handle(sess, mode),
         }
 
-        fetches = [
-            align_sds,
-            align_sents,
-            align_tf_outputs.attention_scores]
-
         with open('align.pkl', 'wb') as out_file:
             while True:
                 try:
-                    fetched = sess.run(fetches, feed_dict)
-                    batch_print_alignment(*fetched)
+                    align_sds_, align_sents_, attention_scores \
+                        = sess.run(
+                        (align_sds,
+                         align_sents,
+                         align_tf_outputs.attention_scores),
+                        feed_dict)
+                    args = []
+                    for field in sd_fields:
+                        args.append(align_sds_[0][field])
+                    args.append(align_sents_[0])
+                    args.append(attention_scores)
+                    batch_print_alignment(*args)
 
                 except tf.errors.OutOfRangeError:
                     break
@@ -648,6 +634,9 @@ def main():
     def _eval_epoch(sess, summary_writer, mode):
         global best_ever_val_bleu
 
+        if FLAGS.align:
+            return 0.
+
         print('in _eval_epoch with mode {}'.format(mode))
 
         data_iterator.restart_dataset(sess, mode)
@@ -659,13 +648,13 @@ def main():
         step = tf.train.global_step(sess, global_step)
 
         ref_hypo_pairs = []
-        fetches = [
-            [data_batch['sent_text'], data_batch['sent_ref_text']],
-            bs_outputs.predicted_ids,
-        ] if not FLAGS.align else [
-            [data_batch['entry_text'], data_batch['entry_ref_text']],
-            align_bs_outputs.predicted_ids,
-        ]
+        fetches = []
+        target_field = sent_fields[0] if not FLAGS.align else sd_fields[0]
+        fetches.extend(data_batch['{}{}_text'.format(target_field, ref_str)]
+                       for ref_str in ref_strs)
+        fetches.append(
+            (bs_outputs if not FLAGS.align else
+             align_bs_outputs_lengths[target_field][0]).predicted_ids)
 
         if not os.path.exists(dir_model):
             os.makedirs(dir_model)
