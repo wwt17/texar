@@ -404,93 +404,193 @@ def build_model(data_batch, data):
         return decoder, bs_outputs
 
 
-    def build_align():
-        used_sent_fields = sent_fields
-        sent_field = used_sent_fields[0]
-        used_sd_fields = sd_fields
-        used_fields = sent_fields + sd_fields
-        ref_str = ref_strs[1]
-        sent_str = '{}{}'.format(sent_field, ref_str)
+    def build_align(align_model='copredict'):
+        # align_model = copredict: predict three fields together
+        # align_model = predict the third field
+        if align_model == 'copredict':
+            used_sent_fields = sent_fields
+            sent_field = used_sent_fields[0]
+            used_sd_fields = sd_fields
+            used_fields = sent_fields + sd_fields
+            ref_str = ref_strs[1]
+            sent_str = '{}{}'.format(sent_field, ref_str)
 
-        # embedders
-        embedders = {
-            name: tx.modules.WordEmbedder(
-                vocab_size=data.vocab(name).size,
-                hparams=config_model.embedders[name])
-            for name in used_fields}
+            # embedders
+            embedders = {
+                name: tx.modules.WordEmbedder(
+                    vocab_size=data.vocab(name).size,
+                    hparams=config_model.embedders[name])
+                for name in used_fields}
 
-        sent_texts = data_batch['{}_text'.format(sent_str)][:, 1:-1]
-        sent_ids = data_batch['{}_text_ids'.format(sent_str)][:, 1:-1]
-        sent_embeds = embedders[sent_field](sent_ids)
-        sent_sequence_length = data_batch['{}_length'.format(sent_str)] - 2
-        sent_enc_outputs, _ = sent_encoder(
-            sent_embeds, sequence_length=sent_sequence_length)
-        sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
+            sent_texts = data_batch['{}_text'.format(sent_str)][:, 1:-1]
+            sent_ids = data_batch['{}_text_ids'.format(sent_str)][:, 1:-1]
+            sent_embeds = embedders[sent_field](sent_ids)
+            sent_sequence_length = data_batch['{}_length'.format(sent_str)] - 2
+            sent_enc_outputs, _ = sent_encoder(
+                sent_embeds, sequence_length=sent_sequence_length)
+            sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
 
-        sd_texts = {}
-        input_sd_embeds = {}
-        target_sd_ids = {}
-        sd_sequence_lengths = {}
+            sd_texts = {}
+            input_sd_embeds = {}
+            target_sd_ids = {}
+            sd_sequence_lengths = {}
 
-        for sd_field in used_sd_fields:
-            sd_str = '{}{}'.format(sd_field, ref_str)
-            sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)][:, :-1]
-            sd_ids = data_batch['{}_text_ids'.format(sd_str)]
-            input_sd_embeds[sd_field] = embedders[sd_field](sd_ids[:, :-1])
-            target_sd_ids[sd_field] = sd_ids[:, 1:]
-            sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
+            for sd_field in used_sd_fields:
+                sd_str = '{}{}'.format(sd_field, ref_str)
+                sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)][:, :-1]
+                sd_ids = data_batch['{}_text_ids'.format(sd_str)]
+                input_sd_embeds[sd_field] = embedders[sd_field](sd_ids[:, :-1])
+                target_sd_ids[sd_field] = sd_ids[:, 1:]
+                sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
 
-        input_sd_embeds = tf.concat(
-            [input_sd_embeds[sd_field] for sd_field in used_sd_fields], -1)
+            input_sd_embeds = tf.concat(
+                [input_sd_embeds[sd_field] for sd_field in used_sd_fields], -1)
 
-        rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
-        attention_decoder = tx.modules.AttentionRNNDecoder(
-            cell=rnn_cell,
-            memory=sent_enc_outputs,
-            memory_sequence_length=sent_sequence_length,
-            output_layer=tf.identity,
-            hparams=config_model.align_attention_decoder)
+            rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
+            attention_decoder = tx.modules.AttentionRNNDecoder(
+                cell=rnn_cell,
+                memory=sent_enc_outputs,
+                memory_sequence_length=sent_sequence_length,
+                output_layer=tf.identity,
+                hparams=config_model.align_attention_decoder)
 
-        tf_outputs, _, tf_sequence_length = attention_decoder(
-            decoding_strategy='train_greedy',
-            inputs=input_sd_embeds,
-            embedding=None,
-            sequence_length=sd_sequence_lengths[used_sd_fields[0]])
-        cell_outputs = tf_outputs.cell_output
+            tf_outputs, _, tf_sequence_length = attention_decoder(
+                decoding_strategy='train_greedy',
+                inputs=input_sd_embeds,
+                embedding=None,
+                sequence_length=sd_sequence_lengths[used_sd_fields[0]])
+            cell_outputs = tf_outputs.cell_output
 
-        projection_name = 'align_projection_{}'.format
+            projection_name = 'align_projection_{}'.format
 
-        losses = []
-        for sd_field in used_sd_fields:
-            projection = tf.layers.Dense(
-                data.vocab(sd_field).size,
-                name=projection_name(sd_field))
-            logits = projection(cell_outputs)
-            loss = tx.losses.sequence_sparse_softmax_cross_entropy(
-                labels=target_sd_ids[sd_field],
-                logits=logits,
-                sequence_length=sd_sequence_lengths[sd_field])
-            losses.append(loss)
-        loss = tf.reduce_sum(losses)
+            losses = []
+            for sd_field in used_sd_fields:
+                projection = tf.layers.Dense(
+                    data.vocab(sd_field).size,
+                    name=projection_name(sd_field))
+                logits = projection(cell_outputs)
+                loss = tx.losses.sequence_sparse_softmax_cross_entropy(
+                    labels=target_sd_ids[sd_field],
+                    logits=logits,
+                    sequence_length=sd_sequence_lengths[sd_field])
+                losses.append(loss)
+            loss = tf.reduce_sum(losses)
 
-        # TODO: modify the inference code to match multiple sd fields
-        bs_outputs_lengths = {}
-        for sd_field in used_sd_fields:
-            start_tokens = tf.ones_like(sd_sequence_lengths[sd_field]) * \
-                data.vocab(sd_field).bos_token_id
-            end_token = data.vocab(sd_field).eos_token_id
-            projection = tf.layers.Dense(
-                data.vocab(sd_field).size,
-                name=projection_name(sd_field))
-            bs_outputs, _, bs_lengths = tx.modules.beam_search_decode(
-                decoder_or_cell=attention_decoder,
-                embedding=embedders[sd_field],
-                start_tokens=start_tokens,
-                end_token=end_token,
-                max_decoding_length=config_train.infer_max_decoding_length,
-                beam_width=config_train.infer_beam_width,
-                output_layer=projection)
-            bs_outputs_lengths[sd_field] = (bs_outputs, bs_lengths)
+            # TODO: modify the inference code to match multiple sd fields
+            bs_outputs_lengths = {}
+            for sd_field in used_sd_fields:
+                start_tokens = tf.ones_like(sd_sequence_lengths[sd_field]) * \
+                    data.vocab(sd_field).bos_token_id
+                end_token = data.vocab(sd_field).eos_token_id
+                projection = tf.layers.Dense(
+                    data.vocab(sd_field).size,
+                    name=projection_name(sd_field))
+                bs_outputs, _, bs_lengths = tx.modules.beam_search_decode(
+                    decoder_or_cell=attention_decoder,
+                    embedding=embedders[sd_field],
+                    start_tokens=start_tokens,
+                    end_token=end_token,
+                    max_decoding_length=config_train.infer_max_decoding_length,
+                    beam_width=config_train.infer_beam_width,
+                    output_layer=projection)
+                bs_outputs_lengths[sd_field] = (bs_outputs, bs_lengths)
+
+        elif align_model == 'predict':
+
+            used_sent_fields = sent_fields
+            sent_field = used_sent_fields[0]
+            input_sd_fields = ['entry', 'value']
+            output_sd_fields = ['attribute']
+
+            used_sd_fields = input_sd_fields + output_sd_fields
+            used_fields = sent_fields + sd_fields
+            ref_str = ref_strs[1]
+            sent_str = '{}{}'.format(sent_field, ref_str)
+
+            # embedders
+            embedders = {
+                name: tx.modules.WordEmbedder(
+                    vocab_size=data.vocab(name).size,
+                    hparams=config_model.embedders[name])
+                for name in used_fields}
+
+            sent_texts = data_batch['{}_text'.format(sent_str)][:, 1:-1]
+            sent_ids = data_batch['{}_text_ids'.format(sent_str)][:, 1:-1]
+            sent_embeds = embedders[sent_field](sent_ids)
+            sent_sequence_length = data_batch['{}_length'.format(sent_str)] - 2
+            sent_enc_outputs, _ = sent_encoder(
+                sent_embeds, sequence_length=sent_sequence_length)
+            sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
+
+            sd_texts = {}
+            input_sd_embeds = {}
+            target_sd_ids = {}
+            sd_sequence_lengths = {}
+
+            for sd_field in input_sd_fields:
+                sd_str = '{}{}'.format(sd_field, ref_str)
+                sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)][:, :-1]
+                sd_ids = data_batch['{}_text_ids'.format(sd_str)]
+                input_sd_embeds[sd_field] = embedders[sd_field](sd_ids[:, :-1])
+                sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
+
+            for sd_field in output_sd_fields:
+                sd_str = '{}{}'.format(sd_field, ref_str)
+                sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)][:, :-1]
+                target_sd_ids[sd_field] = sd_ids[:, 1:]
+                sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
+
+            input_sd_embeds = tf.concat(
+                [input_sd_embeds[sd_field] for sd_field in used_sd_fields], -1)
+
+            rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
+            attention_decoder = tx.modules.AttentionRNNDecoder(
+                cell=rnn_cell,
+                memory=sent_enc_outputs,
+                memory_sequence_length=sent_sequence_length,
+                output_layer=tf.identity,
+                hparams=config_model.align_attention_decoder)
+
+            tf_outputs, _, tf_sequence_length = attention_decoder(
+                decoding_strategy='train_greedy',
+                inputs=input_sd_embeds,
+                embedding=None,
+                sequence_length=sd_sequence_lengths[used_sd_fields[0]])
+            cell_outputs = tf_outputs.cell_output
+
+            projection_name = 'align_projection_{}'.format
+
+            losses = []
+            for sd_field in output_sd_fields:
+                projection = tf.layers.Dense(
+                    data.vocab(sd_field).size,
+                    name=projection_name(sd_field))
+                logits = projection(cell_outputs)
+                loss = tx.losses.sequence_sparse_softmax_cross_entropy(
+                    labels=target_sd_ids[sd_field],
+                    logits=logits,
+                    sequence_length=sd_sequence_lengths[sd_field])
+                losses.append(loss)
+            loss = tf.reduce_sum(losses)
+
+            # TODO: modify the inference code to match multiple sd fields
+            bs_outputs_lengths = {}
+            for sd_field in output_sd_fields:
+                start_tokens = tf.ones_like(sd_sequence_lengths[sd_field]) * \
+                    data.vocab(sd_field).bos_token_id
+                end_token = data.vocab(sd_field).eos_token_id
+                projection = tf.layers.Dense(
+                    data.vocab(sd_field).size,
+                    name=projection_name(sd_field))
+                bs_outputs, _, bs_lengths = tx.modules.beam_search_decode(
+                    decoder_or_cell=attention_decoder,
+                    embedding=embedders[sd_field],
+                    start_tokens=start_tokens,
+                    end_token=end_token,
+                    max_decoding_length=config_train.infer_max_decoding_length,
+                    beam_width=config_train.infer_beam_width,
+                    output_layer=projection)
+                bs_outputs_lengths[sd_field] = (bs_outputs, bs_lengths)
 
         return (sent_texts, sent_sequence_length), (sd_texts, sd_sequence_lengths),\
                loss, tf_outputs, bs_outputs_lengths
