@@ -404,7 +404,7 @@ def build_model(data_batch, data):
         return decoder, bs_outputs
 
 
-    def build_align(align_model='copredict'):
+    def build_align(align_model='predict'):
         # align_model = copredict: predict three fields together
         # align_model = predict the third field
         if align_model == 'copredict':
@@ -541,7 +541,7 @@ def build_model(data_batch, data):
                 sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
 
             input_sd_embeds = tf.concat(
-                [input_sd_embeds[sd_field] for sd_field in used_sd_fields], -1)
+                [input_sd_embeds[sd_field] for sd_field in input_sd_fields], -1)
 
             rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
             attention_decoder = tx.modules.AttentionRNNDecoder(
