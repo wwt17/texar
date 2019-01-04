@@ -88,10 +88,14 @@ def print_alignment(data0, data1, data2, sent, score):
     datas = [data0, data1, data2]
     for data in datas:
         print(' ' * 20 + ' '.join(map('{:>12}'.format, data)))
+    def float2str(x):
+        s = '{:12.2f}'.format(x)
+        if s == '{:12.2f}'.format(0.):
+            s = ' ' * 12
+        return s
     for j, sent_token in enumerate(sent):
         print('{:>20}'.format(sent_token) + ' '.join(map(
-            lambda x: '{:12.2e}'.format(x) if x != 0 else ' ' * 12,
-            score[:, j])))
+            float2str, score[:, j])))
 
 
 def strip_print_alignment(data0, data1, data2, sent, score):
