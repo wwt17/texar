@@ -788,8 +788,8 @@ def prep_generated_data(genfile, dict_pfx, outfile, trdata, val_file, rec_outfil
                 print(line_format(gold_stat), file=rec_outfile)
         ns = zip(*gold_stats)
         sums = tuple(map(sum, ns))
-        print('gold recall: {:.6f}, gold prec: {:.6f}'.format(
-            sums[1] / sums[0], sums[1] / sums[2]))
+        ret = sums[1] / sums[0], sums[1] / sums[2]
+        print('gold recall: {:.6f}, cand prec: {:.6f}'.format(*ret))
 
     else:
         sent_reset_indices = {0}  # sentence indices where a box/story is reset
@@ -816,6 +816,9 @@ def prep_generated_data(genfile, dict_pfx, outfile, trdata, val_file, rec_outfil
         h5fi["val{}s".format(name)] = np.array(content, dtype=int)
     h5fi["boxrestartidxs"] = np.array(np.array(rel_reset_indices), dtype=int)  # 1-indexed
     h5fi.close()
+
+    if not backup:
+        return ret
 
 
 ################################################################################

@@ -31,9 +31,10 @@ def get_precrec(
         dict_pfx=os.path.join(data2text_dir, "roto-ie"),
         json_path=os.path.join(data2text_dir, "rotowire"),
         write_record=True):
-    prep_generated_data(hypo_file, dict_pfx, inter_file,
-                        trdata=get_json_dataset(json_path, "train"),
-                        val_file=gold_file)
+    rough_res = prep_generated_data(
+        hypo_file, dict_pfx, inter_file,
+        trdata=get_json_dataset(json_path, "train"),
+        val_file=gold_file)
 
     ret = subprocess.call(
         ["th", "extractor.lua",
@@ -63,7 +64,7 @@ def get_precrec(
             step = 0
         stage = basename_parts[-2]
         with open(os.path.join(dirname, "ie_results.{}.txt".format(stage)), 'a') as results_file:
-            print("{}\t{:.5f}\t{:.5f}".format(step, precrec[0], precrec[1]), file=results_file)
+            print("{}\t{}".format(step, "\t".join(map("{:.6f}".format, rough_res + precrec))), file=results_file)
             results_file.flush()
 
     return precrec
