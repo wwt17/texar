@@ -4,3 +4,4 @@ munkres
 nltk
 h5py
 pyxdameraulevenshtein
+scikit-learn

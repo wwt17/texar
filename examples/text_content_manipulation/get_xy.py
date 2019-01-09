@@ -10,26 +10,15 @@ import numpy as np
 import tensorflow as tf
 import texar as tx
 import pickle
+import json
 from utils import *
 from text2num import text2num, NumberException
+from replace_numbers import replace_numbers
 
 
-def get_align_score(x, y):
-    x = x.entry
-    if x == y:
-        return True
-    try:
-        n_x = int(x)
-    except ValueError:
-        return False
-    try:
-        n_y = int(y)
-    except ValueError:
-        try:
-            n_y = text2num(y)
-        except NumberException:
-            return False
-    return n_x == n_y
+with open(os.path.join('data2text', 'res', 'train.idx.json'), 'r') as idx_f:
+    sent_idx = json.load(idx_f)
+sent_to_idx = dict(map(lambda pair: (' '.join(replace_numbers(pair[0].split())), pair[1]), sent_idx))
 
 
 def get_align(text00, text01, text02, text1):
@@ -37,10 +26,24 @@ def get_align(text00, text01, text02, text1):
         strip_special_tokens_of_list,
         (text00, text01, text02, text1))
     sd_texts, sent_texts = pack_sd(DataItem(text00, text01, text02)), text1
+    sent = ' '.join(sent_texts)
+    try:
+        idxs = sent_to_idx[sent]
+        assert len(idxs) == len(sd_texts), "\nidxs = {}\nsd_texts = {}\nsent = {}".format(idxs, sd_texts, sent)
+    except KeyError:
+        idxs = []
+        idx = 0
+        for item in sd_texts:
+            try:
+                while item.entry != sent_texts[idx]:
+                    idx += 1
+            except IndexError:
+                raise Exception('sd_texts = {}, sent = {}, item = {}'.format(sd_texts, sent, item))
+            idxs.append(idx)
     align = [
-        [get_align_score(x, y)
-         for y in sent_texts]
-        for x in sd_texts]
+        [int(j == idx)
+         for j in range(len(sent_texts))]
+        for idx in idxs]
     return np.array(align)
 
 batch_get_align = batchize(get_align)

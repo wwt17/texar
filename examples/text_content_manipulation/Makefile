@@ -17,7 +17,7 @@ roto-ie: data2text/roto-ie.h5 data2text/roto-ie.dict data2text/roto-ie.labels
 data2text/roto-ie.h5 data2text/roto-ie.dict data2text/roto-ie.labels:
 	cd data2text; python data_utils.py -mode make_ie_data -input_path rotowire -output_fi roto-ie.h5
 
-extractor_models: data2text/roto-convie-ep3-96-49 data2text/roto-convie-ep5-95-64 data2text/roto-convie-ep9-95-69 data2text/roto-blstmie-ep2-95-70 data2text/roto-blstmie-ep9-91-79 data2text/roto-blstmie-ep3-94-72
+extractor_models: data2text/roto-convie_1 data2text/roto-convie_2 data2text/roto-convie_3 data2text/roto-blstmie_1 data2text/roto-blstmie_2 data2text/roto-blstmie_3
 
-data2text/roto-convie-ep3-96-49 data2text/roto-convie-ep5-95-64 data2text/roto-convie-ep9-95-69 data2text/roto-blstmie-ep2-95-70 data2text/roto-blstmie-ep9-91-79 data2text/roto-blstmie-ep3-94-72:
-	scp tir:zichaoy/lithium_project/zichaoy/$@ data2text/
+data2text/roto-convie_1 data2text/roto-convie_2 data2text/roto-convie_3 data2text/roto-blstmie_1 data2text/roto-blstmie_2 data2text/roto-blstmie_3:
+	scp daoyuan:wwt/texar/examples/text_content_manipulation/data2text/$@ data2text/
