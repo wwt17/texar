@@ -646,7 +646,7 @@ def main():
                     texts = dict(zip(text_names, texts))
                     texts["y^"] = texts["y^"][:steps]
                     for name in text_names:
-                        print("{:<2}: {}".format(name, ' '.join(texts[name])))
+                        print("{:<2}: {}".format(name, ' '.join(map(bytes.decode, texts[name]))))
 
                     if copy_flag:
                         copy_names = []
@@ -674,7 +674,7 @@ def main():
                                 print("{:<2s} - {:<2s}: ".format(name0, name1), end='')
                                 text = texts[name1]
                                 print(' '.join(map('{0[0]}={0[1]}'.format,
-                                                   zip(text, map('{:.2f}'.format, att)))))
+                                                   zip(map(bytes.decode, text), map('{:.2f}'.format, att)))))
 
                         if copy_flag:
                             probs, zs = __[:cnt], __[cnt:]
@@ -684,7 +684,7 @@ def main():
                                     name=name,
                                     sum=np.sum(prob),
                                     max=np.max(prob),
-                                    argmax=text[np.argmax(prob)],
+                                    argmax=text[np.argmax(prob)].decode(),
                                 ))
 
                                 for text_length, token in enumerate(text):
@@ -697,9 +697,9 @@ def main():
 
                                 print(' '.join(
                                     map('{0[0]}={0[1]}'.format,
-                                        zip(text, map('{:.2f}'.format, prob)))))
+                                        zip(map(bytes.decode, text), map('{:.2f}'.format, prob)))))
 
-                        print('result: {}'.format(texts["y^"][step]))
+                        print('result: {}'.format(texts["y^"][step].decode()))
 
                 step = tf.train.global_step(sess, global_step)
 
