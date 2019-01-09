@@ -62,7 +62,7 @@ def main():
             data_iterator.handle: data_iterator.get_handle(sess, mode),
         }
 
-        with open('match.pkl', 'wb') as out_file:
+        with open('match.{}.pkl'.format(mode), 'wb') as out_file:
             while True:
                 try:
                     batch = sess.run(data_batch, feed_dict)
@@ -84,6 +84,8 @@ def main():
         sess.run(tf.local_variables_initializer())
         sess.run(tf.tables_initializer())
 
+        _get_match(sess, 'test')
+        _get_match(sess, 'valid')
         _get_match(sess, 'train')
 
 

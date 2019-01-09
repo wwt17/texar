@@ -1,8 +1,11 @@
 from __future__ import print_function
+from __future__ import division
+from __future__ import unicode_literals
 
 import argparse
 import os
 import json
+from collections import Counter
 from nltk.translate.bleu_score import sentence_bleu
 from pprint import pprint
 from multiprocessing import Pool
@@ -119,23 +122,9 @@ class RecordDataset(object):
         return masked_sent
 
     @staticmethod
-    def generalized_jaccard(list_a, list_b):
-        keys = set(list_a + list_b)
-        counter_a = {}
-        counter_b = {}
-        for k in keys:
-            counter_a[k] = 0
-            counter_b[k] = 0
-        for x in list_a:
-            counter_a[x] += 1
-        for x in list_b:
-            counter_b[x] += 1
-        sum_min = 0
-        sum_max = 0
-        for k in keys:
-            sum_min += min(counter_a[k], counter_b[k])
-            sum_max += max(counter_a[k], counter_b[k])
-        return sum_min / sum_max
+    def generalized_jaccard(a, b):
+        a, b = map(Counter, (a, b))
+        return sum((a & b).values()) / sum((a | b).values())
 
     @staticmethod
     def construct_cost_matrix(query, target):
@@ -153,10 +142,9 @@ class RecordDataset(object):
         return cost_matrix
 
     def calculate_score(self, query_record, target_record):
-        query = [r for r in query_record['records'] if r.rel not in ignore_rels]
-        target = [r for r in target_record['records'] if r.rel not in ignore_rels]
-        query_rels = [r.rel for r in query]
-        target_rels = [r.rel for r in target]
+        query_rels, target_rels = (
+            [r.rel for r in record['records'] if r.rel not in ignore_rels]
+            for record in (query_record, target_record))
         return self.generalized_jaccard(query_rels, target_rels)
 
     def calculate_alignment(self, a_records, b_records):
@@ -174,20 +162,21 @@ class RecordDataset(object):
         # print("total cost: %d" % total_cost)
         return filtered_indexes, total_cost
 
-    def retrieve(self, query_record, topk=3):
+    def retrieve(self, query_record, filter_complete_matching=False, topk=1):
         scores = []
         for example in self.records:
             if example['target'] != query_record['target']:
                 jaccard = self.calculate_score(query_record, example)
                 scores.append((jaccard, example))
+        if filter_complete_matching:
+            scores = list(filter(lambda x: x[0] < 1, scores))
         highest_score = max(map(lambda x: x[0], scores))
         highest_examples = []
-        for s in scores:
-            if s[0] == highest_score:
-                # start calculating the min cost
-                filtered_indexes, total_cost = self.calculate_alignment(query_record['records'], s[1]['records'])
-                highest_examples.append({'jaccard': s[0], 'min_cost': total_cost, 'alignment': filtered_indexes,
-                                         'retrieved': s[1], 'query': query_record})
+        for s in filter(lambda s: s[0] == highest_score, scores):
+            # start calculating the min cost
+            filtered_indexes, total_cost = self.calculate_alignment(query_record['records'], s[1]['records'])
+            highest_examples.append({'jaccard': s[0], 'min_cost': total_cost, 'alignment': filtered_indexes,
+                                     'retrieved': s[1], 'query': query_record})
         highest_examples.sort(key=lambda x: x['min_cost'])
         return highest_examples[0]
 
@@ -228,7 +217,7 @@ class RecordDataset(object):
 
 
 def retrieve(query_record):
-    return rd.retrieve(query_record)
+    return rd.retrieve(query_record, filter_complete_matching=True)
 
 
 def retrieve_with_target(query_record):

@@ -1,5 +1,8 @@
 from __future__ import print_function
-import sys, codecs, json, os
+from __future__ import division
+from __future__ import unicode_literals
+
+import sys, json, os
 from collections import Counter, defaultdict, namedtuple
 import copy
 from nltk import sent_tokenize, word_tokenize
@@ -11,11 +14,12 @@ import math
 from text2num import text2num, NumberException
 import argparse
 
-def open(*args, **kwargs):
-    return codecs.open(encoding="utf-8", *args, **kwargs)
-
 try:
     range = xrange
+    import codecs
+    def open(*args, **kwargs):
+        return codecs.open(encoding="utf-8", *args, **kwargs)
+
 except NameError:
     pass
 
@@ -79,8 +83,19 @@ score_words.update(box_score_words)
 
 indicating_words = set()
 for words in score_words.values():
-    for word in words:
-        indicating_words.add(word)
+    indicating_words.update(words)
+
+
+def starts_with_indicating_word(token):
+    for word in indicating_words:
+        if token.startswith(word):
+            return word
+    return None
+
+
+def get_json_dataset(path, stage):
+    with open(os.path.join(path, "{}.json".format(stage)), 'r') as json_file:
+        return json.load(json_file)
 
 
 def get_ents(dat):
@@ -189,7 +204,9 @@ def extract_numbers(sent):
         try:
             n = int(sent[i])
         except ValueError:
-            if sent[i] in number_words and not annoying_number_word(sent, i):  # get longest span  (this is kind of stupid)
+            if sent[i] in ["a", "an"] and i + 1 < len(sent) and starts_with_indicating_word(sent[i+1]) is not None:
+                n = 1
+            elif sent[i] in number_words and not annoying_number_word(sent, i):  # get longest span  (this is kind of stupid)
                 while j < len(sent) and sent[j] in number_words and not annoying_number_word(sent, j):
                     j += 1
                 try:
@@ -207,11 +224,11 @@ def extract_numbers(sent):
 
 def get_player_idx(bs, entname):
     keys = []
-    for k, v in bs["PLAYER_NAME"].iteritems():
+    for k, v in bs["PLAYER_NAME"].items():
         if entname == v:
             keys.append(k)
     if len(keys) == 0:
-        for k, v in bs["SECOND_NAME"].iteritems():
+        for k, v in bs["SECOND_NAME"].items():
             if entname == v:
                 keys.append(k)
         if len(keys) > 1:  # take the earliest one
@@ -219,7 +236,7 @@ def get_player_idx(bs, entname):
             keys = keys[:1]
             # print("picking", bs["PLAYER_NAME"][keys[0]])
     if len(keys) == 0:
-        for k, v in bs["FIRST_NAME"].iteritems():
+        for k, v in bs["FIRST_NAME"].items():
             if entname == v:
                 keys.append(k)
         if len(keys) > 1:  # if we matched on first name and there are a bunch just forget about it
@@ -230,7 +247,7 @@ def get_player_idx(bs, entname):
     return keys[0] if len(keys) > 0 else None
 
 
-def get_rels(entry, tokens, ents, nums, players, teams, cities, filter_none=True):
+def get_rels(entry, tokens, ents, nums, players, teams, cities, filter_none=False):
     """
     this looks at the box/line score and figures out which (entity, number) pairs
     are candidate true relations, and which can't be.
@@ -267,7 +284,7 @@ def get_rels(entry, tokens, ents, nums, players, teams, cities, filter_none=True
                 found = False
                 strnum = str(numtup.s)
                 if pidx is not None:  # player might not actually be in the game or whatever
-                    for colname, col in bs.iteritems():
+                    for colname, col in bs.items():
                         if col[pidx] == strnum:  # allow multiple for now
                             rels.append(Rel(ent, numtup, "PLAYER-" + colname, pidx))
                             found = True
@@ -296,7 +313,7 @@ def get_rels(entry, tokens, ents, nums, players, teams, cities, filter_none=True
                 found = False
                 strnum = str(numtup.s)
                 if linescore is not None:
-                    for colname, val in linescore.iteritems():
+                    for colname, val in linescore.items():
                         if val == strnum:
                             # rels.append(Rel(ent, numtup, "TEAM-" + colname, is_home))
                             # apparently I appended TEAM- at some pt...
@@ -306,19 +323,22 @@ def get_rels(entry, tokens, ents, nums, players, teams, cities, filter_none=True
                     if not filter_none:
                         rels.append(Rel(ent, numtup, "NONE", None))  # should i specialize the NONE labels too?
 
+    filt = (lambda cond, rels: filter(cond, rels)) if filter_none else \
+           (lambda cond, rels: map(lambda rel: rel if cond(rel) else
+                                   Rel(rel.ent, rel.num, "NONE", None), rels))
+
     filtered_rels = []
     for num in nums:
         related_rels = list(filter(lambda rel: rel.num == num, rels))
-        if len(related_rels) > 1: # ambiguous
-            for indicating_word in indicating_words:
-                if tokens[num.end].startswith(indicating_word):
-                    def correct(rel):
-                        try:
-                            return indicating_word in score_words[rel.type]
-                        except KeyError:
-                            return True
-                    related_rels = list(filter(correct, related_rels))
-                    break
+        cnt = len(list(filter(lambda rel: rel.type != "NONE", related_rels)))
+        indicating_word = starts_with_indicating_word(tokens[num.end])
+        if indicating_word is not None:
+            def correct(rel):
+                try:
+                    return indicating_word in score_words[rel.type]
+                except KeyError:
+                    return True
+            related_rels = list(filt(correct, related_rels))
         filtered_rels.extend(related_rels)
     rels = filtered_rels
 
@@ -365,7 +385,7 @@ def get_rels(entry, tokens, ents, nums, players, teams, cities, filter_none=True
             ensurers.append(ensure(ns[0], 'TEAM-WINS', ent))
             ensurers.append(ensure(ns[1], 'TEAM-LOSSES', ent))
     for ensurer in ensurers:
-        rels = filter(ensurer, rels)
+        rels = filt(ensurer, rels)
     rels = list(rels)
 
     return rels
@@ -384,11 +404,11 @@ def do_connect_multiwords(tokes, rels, ents, nums):
     # process target tokens to connect multiword with underscore
     new_tokens = [tokes[0]]
     for i in range(1, len(tokes)):
-        token = unicode(tokes[i])
+        token = tokes[i]
         if retained[i - 1]:
             new_tokens.append(token)
         else:
-            new_tokens[-1] = new_tokens[-1] + u'_' + token
+            new_tokens[-1] = new_tokens[-1] + '_' + token
 
     new_loc = [0]
     for flag in retained:
@@ -399,7 +419,7 @@ def do_connect_multiwords(tokes, rels, ents, nums):
         ent = rel.ent
         ent = Ent(start=new_loc[ent.start],
                   end=new_loc[ent.end],
-                  s=unicode(ent.s).replace(' ', '_'),
+                  s=ent.s.replace(' ', '_'),
                   is_pron=ent.is_pron)
         assert ent.end - ent.start == 1
         assert new_tokens[ent.start] == ent.s, "new_tokens = {}, ent = {}".format(new_tokens, ent)
@@ -413,7 +433,7 @@ def do_connect_multiwords(tokes, rels, ents, nums):
     return new_tokens, new_rels
 
 
-def get_candidate_rels(entry, summ, all_ents, prons, players, teams, cities, connect_multiwords=False):
+def get_candidate_rels(entry, summ, all_ents, prons, players, teams, cities, connect_multiwords=False, filter_none=False):
     """
     generate tuples of form (sentence_tokens, [rels]) to candrels
     """
@@ -423,7 +443,7 @@ def get_candidate_rels(entry, summ, all_ents, prons, players, teams, cities, con
         tokes = sent.split()
         ents = extract_entities(tokes, all_ents, prons)
         nums = extract_numbers(tokes)
-        rels = list(get_rels(entry, tokes, ents, nums, players, teams, cities))
+        rels = list(get_rels(entry, tokes, ents, nums, players, teams, cities, filter_none=filter_none))
         if connect_multiwords:
             tokes, rels = do_connect_multiwords(tokes, rels, ents, nums)
         if len(rels) > 0:
@@ -463,7 +483,7 @@ def get_multilabeled_data(tup, vocab, labeldict, max_len):
         ent, num, label, idthing = rel
         unique_rels[ent, num].append(label)
 
-    for rel, label_list in unique_rels.iteritems():
+    for rel, label_list in unique_rels.items():
         ent, num = rel
         ent_dists = [j - ent[0] if j < ent[0] else j - ent[1] + 1 if j >= ent[1] else 0 for j in range(max_len)]
         num_dists = [j - num[0] if j < num[0] else j - num[1] + 1 if j >= num[1] else 0 for j in range(max_len)]
@@ -482,36 +502,54 @@ def append_labelnums(labels):
 
 
 def clean_text(text):
-    text = text.replace(u"\u2019", u"'")
-    text = text.replace(u"s ' ", u"s 's ")
-    text = text.replace(u"'s ", u" 's ")
-    text = text.replace(u"s' ", u"s 's ")
+    text = text.replace("\u2019", "'")
+    text = text.replace("s ' ", "s 's ")
+    text = text.replace("'s ", " 's ")
+    text = text.replace("s' ", "s 's ")
     return text
 
 
-def get_datasets(path="rotowire", connect_multiwords=False):
-    datasets = {}
-    for stage in stages:
-        with open(os.path.join(path, "{}.json".format(stage)), "r") as f:
-            datasets[stage] = json.load(f)
+def candidate_rels_extractor(all_ents, players, teams, cities, prons, connect_multiwords=False):
+    def extract(entry, summ, filter_none=False):
+        return get_candidate_rels(entry, summ, all_ents, prons, players, teams, cities, connect_multiwords=connect_multiwords)
+    return extract
 
+
+def default_candidate_rels_extractor(path):
+    dataset = get_json_dataset(path, "train")
+    all_ents, players, teams, cities = get_ents(dataset)
+    if connect_multiwords:
+        all_ents, players, teams, cities = (
+            set(map(lambda s: s.replace(' ', '_'), ents))
+            for ents in (all_ents, players, teams, cities))
+    return candidate_rels_extractor(all_ents, players, teams, cities, prons, connect_multiwords=False)
+
+
+def get_datasets(path, connect_multiwords=False, filter_none=False):
+    datasets = {stage: get_json_dataset(path, stage) for stage in stages}
     all_ents, players, teams, cities = get_ents(datasets["train"])
+    extract = candidate_rels_extractor(all_ents, players, teams, cities, prons, connect_multiwords=connect_multiwords)
 
     extracted_stuff = {}
     for stage, dataset in datasets.items():
         nugz = []
         for i, entry in enumerate(dataset):
-            summ = clean_text(u" ".join(entry['summary']))
-            nugz.extend(get_candidate_rels(entry, summ, all_ents, prons, players, teams, cities, connect_multiwords=connect_multiwords))
+            summ = clean_text(" ".join(entry['summary']))
+            nugz.extend(extract(entry, summ, filter_none=filter_none))
         nugz = list(filter(lambda data: len(data[0]) <= 50 and len(data[1]) <= 50, nugz))
         extracted_stuff[stage] = nugz
+
+    if connect_multiwords:
+        all_ents, players, teams, cities = (
+            set(map(lambda s: s.replace(' ', '_'), ents))
+            for ents in (all_ents, players, teams, cities))
 
     return extracted_stuff, all_ents, players, teams, cities
 
 
 # modified full sentence IE training
-def save_full_sent_data(outfile, path="rotowire", multilabel_train=False, nonedenom=0, backup=False, verbose=True):
-    datasets = get_datasets(path, connect_multiwords=not backup)[0]
+def save_full_sent_data(outfile, path, multilabel_train=False, nonedenom=0, backup=False, verbose=True):
+    datasets = get_datasets(path, connect_multiwords=not backup, filter_none=False)[0]
     # make vocab and get labels
     word_counter = Counter()
     [word_counter.update(tup[0]) for tup in datasets['train']]
@@ -520,7 +558,7 @@ def save_full_sent_data(outfile, path="rotowire", multilabel_train=False, nonede
             del word_counter[k]  # will replace w/ unk
     word_counter["UNK"] = 1
     vocab = {wrd: i + 1 for i, wrd in enumerate(word_counter.keys())}
-    labelset = set()
+    labelset = {"NONE"}
     [labelset.update(rel.type for rel in tup[1]) for tup in datasets['train']]
     labeldict = {label: i + 1 for i, label in enumerate(labelset)}
 
@@ -543,7 +581,7 @@ def save_full_sent_data(outfile, path="rotowire", multilabel_train=False, nonede
         none_idxs = [i for i, labellist in enumerate(trlabels) if labellist[0] == labeldict["NONE"]]
         random.shuffle(none_idxs)
         # allow at most 1/(nonedenom+1) of NONE-labeled
-        num_to_keep = int(math.floor(float(len(trlabels) - len(none_idxs)) / nonedenom))
+        num_to_keep = int(math.floor((len(trlabels) - len(none_idxs)) / nonedenom))
         print("originally", len(trlabels), "training examples")
         print("keeping", num_to_keep, "NONE-labeled examples")
         ignore_idxs = set(none_idxs[num_to_keep:])
@@ -579,7 +617,7 @@ def save_full_sent_data(outfile, path="rotowire", multilabel_train=False, nonede
 
     # write dicts
     for d, name in ((vocab, 'dict'), (labeldict, 'labels')):
-        revd = {v: k for k, v in d.iteritems()}
+        revd = {v: k for k, v in d.items()}
         with open("{}.{}".format(outfile.split('.')[0], name), "w+") as f:
             for i in range(1, len(revd) + 1):
                 f.write("%s %d \n" % (revd[i], i))
@@ -589,8 +627,8 @@ def convert_aux(additional):
     aux = 'NONE'
     if additional is None:
         aux = "NONE"
-    elif isinstance(additional, unicode):
-        aux = str(additional)
+    elif isinstance(additional, str):
+        aux = additional
     elif isinstance(additional, bool):
         if additional:
             aux = "HOME"
@@ -603,7 +641,7 @@ def filter_none_rels(rels):
     return filter(lambda rel: rel.type != "NONE", rels)
 
 
-def write_data_to_line(data, outfile, filter_none=True):
+def data_to_csv_lines(data, filter_none=True):
     sent = ' '.join(data[0])
     rels = data[1]
     if filter_none:
@@ -611,38 +649,12 @@ def write_data_to_line(data, outfile, filter_none=True):
     for rel in rels:
         additional = rel[3]
         aux = convert_aux(additional)
-        line_to_write = u'\t'.join(map(unicode, (sent, rel[0][0], rel[0][1], rel[0][2],
-                                                 rel[1][0], rel[1][1], rel[1][2], rel[2], aux)))
-        outfile.write(line_to_write + '\n')
-
-
-def split_sent_to_triples(dataset, filter_none=True):
-    processed_data = []
-    for data in dataset:
-        rels = data[1]
-        triples = set()
-        if filter_none:
-            rels = filter_none_rels(rels)
-        for rel in rels:
-            additional = rel[3]
-            aux = convert_aux(additional)
-            triples.add((rel[2], rel[0][2], str(rel[1][2])))
-            # add name information for copying
-            if "PLAYER" in rel[2]:
-                triples.add(("PLAYER_NAME", rel[0][2], rel[0][2]))
-            elif "TEAM" in rel[2]:
-                triples.add(("TEAM_NAME", rel[0][2], rel[0][2]))
-            # add home away information
-            # if aux in ("HOME", "AWAY"):
-            #     triples.add(("HOME_AWAY", rel[0][2], aux))
-        if len(triples) > 0:
-            processed_data.append({'tokens': data[0], 'triples': list(triples)})
-    return processed_data
+        yield '\t'.join(map(str, (sent, rel[0][0], rel[0][1], rel[0][2],
+                                  rel[1][0], rel[1][1], rel[1][2], rel[2], aux)))
 
 
 def make_translate_corpus(data, players, teams, cities, filter_none=True):
     tokens, rels = data
-    tokens = list(map(unicode, tokens))
     res = []
 
     # add name information for copying
@@ -661,8 +673,8 @@ def make_translate_corpus(data, players, teams, cities, filter_none=True):
     if filter_none:
         rels = filter_none_rels(rels)
     for rel in rels:
-        ent = unicode(rel.ent.s)
-        num = unicode(rel.num.s)
+        ent = rel.ent.s
+        num = str(rel.num.s)
         res.append((rel.num.start, rel.type, ent, num))
 
         # add home away information
@@ -672,45 +684,47 @@ def make_translate_corpus(data, players, teams, cities, filter_none=True):
         #     res.append((rel.num.start, "HOME_AWAY", ent, aux))
 
     res.sort()
-    res = list(map(lambda a: a[1:], res))
 
     return res, tokens
 
 
 # for extracting sentence-data pairs
-def extract_sentence_data(outfile, path="rotowire", connect_multiwords=True):
-    datasets, all_ents, players, teams, cities = get_datasets(path, connect_multiwords=connect_multiwords)
-    all_ents, players, teams, cities = map(
-        lambda ents: set(map(lambda token: unicode(token).replace(' ', '_'), ents)),
-        (all_ents, players, teams, cities))
+def extract_sentence_data(outfile_prefix, path, connect_multiwords=True, filter_max_len=50):
+    datasets, all_ents, players, teams, cities = get_datasets(path, connect_multiwords=connect_multiwords, filter_none=True)
     for stage, dataset in datasets.items():
-        # output json
-        with open(outfile + '.{}.json'.format(stage), 'w') as of:
-            json.dump(split_sent_to_triples(dataset), of)
-
         # output translate data files
-        with open(outfile + '.{}.src'.format(stage), 'w') as of1, \
-                open(outfile + '.{}.tgt'.format(stage), 'w') as of2:
-            corpus = map(lambda data: make_translate_corpus(data, players, teams, cities), dataset)
-            corpus = filter(
-                lambda pair: 0 < len(pair[0]) <= 50 and len(pair[1]) <= 50,
-                corpus)
-            src_lines, tgt_lines = zip(*corpus)
-            src_lines = map(
-                lambda triples: u' '.join(u'|'.join((t[2], t[0], t[1]))
-                                          for t in triples),
-                src_lines)
-            tgt_lines = map(u' '.join, tgt_lines)
-            of1.write(u'\n'.join(src_lines))
-            of2.write(u'\n'.join(tgt_lines))
+        corpus = map(lambda data: make_translate_corpus(data, players, teams, cities), dataset)
+        corpus = filter(
+            lambda pair: 0 < len(pair[0]) <= filter_max_len and len(pair[1]) <= filter_max_len,
+            corpus)
+        src_lines, tgt_lines = zip(*corpus)
+        idxs, src_lines = zip(*map(
+            lambda res: list(zip(*map(lambda t: (t[0], t[1:]), res))),
+            src_lines))
+
+        src_lines = map(
+            lambda triples: ' '.join('|'.join((t[2], t[0], t[1]))
+                                      for t in triples),
+            src_lines)
+        with open(outfile_prefix + '{}.src'.format(stage), 'w') as src_f:
+            src_f.write('\n'.join(src_lines))
+
+        tgt_lines = map(' '.join, tgt_lines)
+        with open(outfile_prefix + '{}.tgt'.format(stage), 'w') as tgt_f:
+            tgt_f.write('\n'.join(tgt_lines))
+
+        sent_idx = list(zip(tgt_lines, idxs))
+        with open(outfile_prefix + '{}.idx.json'.format(stage), 'w') as idx_f:
+            json.dump(sent_idx, idx_f)
 
         # output csv
-        with open(outfile + '.{}.csv'.format(stage), 'w') as of:
+        with open(outfile_prefix + '{}.csv'.format(stage), 'w') as csv_f:
             for data in dataset:
-                write_data_to_line(data, of)
+                for line in data_to_csv_lines(data):
+                    print(line, file=csv_f)
 
 
-def prep_generated_data(genfile, dict_pfx, outfile, train_file, val_file, rec_outfile=None, backup=False):
+def prep_generated_data(genfile, dict_pfx, outfile, trdata, val_file, rec_outfile=None, backup=False):
     # recreate vocab and labeldict
     def read_dict(s):
         d = {}
@@ -725,13 +739,11 @@ def prep_generated_data(genfile, dict_pfx, outfile, train_file, val_file, rec_ou
     with open(genfile, "r") as f:
         gens = f.readlines()
 
-    with open(train_file, "r") as f:
-        trdata = json.load(f)
-
     all_ents, players, teams, cities = get_ents(trdata)
 
     if not backup:
-        all_ents = set(x.replace(' ', '_') for x in all_ents)
+        all_ents, players, teams, cities = (set(x.replace(' ', '_') for x in ents) for ents in (all_ents, players, teams, cities))
+        extract = candidate_rels_extractor(all_ents, players, teams, cities, prons)
 
     with open(val_file, "r") as f:
         valdata = json.load(f) if backup else [[x.split('|') for x in line.split()] for line in f]
@@ -765,19 +777,24 @@ def prep_generated_data(genfile, dict_pfx, outfile, train_file, val_file, rec_ou
                         extracted_rels.append(Rel(ent, num, 'NONE', None))
             nugz.append((sent, extracted_rels))
 
-            gold_stats.append((len(gold_rels), sum(gold_matched)))
+            gold_stats.append((
+                len(gold_rels), sum(gold_matched),
+                sum(1 for rel in extracted_rels if rel[2] != 'NONE')))
 
         if rec_outfile is not None:
-            print('{}\t{}'.format('gold_n', 'gold_match_n'), file=rec_outfile)
-            for n, m in gold_stats:
-                print('{}\t{}'.format(n, m), file=rec_outfile)
-        gold_n, gold_match_n = zip(*gold_stats)
-        print('gold recall: {:.6f}'.format(float(sum(gold_match_n)) / sum(gold_n)))
+            line_format = '\t'.join
+            print(line_format(('gold_n', 'gold_match_n', 'pred_nonnone_n')), file=rec_outfile)
+            for gold_stat in gold_stats:
+                print(line_format(gold_stat), file=rec_outfile)
+        ns = zip(*gold_stats)
+        sums = tuple(map(sum, ns))
+        print('gold recall: {:.6f}, gold prec: {:.6f}'.format(
+            sums[1] / sums[0], sums[1] / sums[2]))
 
     else:
         sent_reset_indices = {0}  # sentence indices where a box/story is reset
         for entry, summ in zip(valdata, gens):
-            nugz.extend(get_candidate_rels(entry, summ, all_ents, prons, players, teams, cities))
+            nugz.extend(extract(entry, summ, filter_none=False))
             sent_reset_indices.add(len(nugz))
 
     # save stuff
@@ -819,7 +836,7 @@ NUM_PLAYERS = 13
 def get_player_idxs(entry):
     nplayers = 0
     home_players, vis_players = [], []
-    for k, v in entry["box_score"]["PTS"].iteritems():
+    for k, v in entry["box_score"]["PTS"].items():
         nplayers += 1
 
     num_home, num_vis = 0, 0
@@ -896,15 +913,12 @@ def fix_target_idx(summ, assumed_idx, word, neighborhood=5):
 
 
 # for each target word want to know where it could've been copied from
-def make_pointerfi(outfi, inp_file="rotowire/train.json", resolve_prons=False):
+def make_pointerfi(outfi, trdata, resolve_prons=False):
     """
     N.B. this function only looks at string equality in determining pointerness.
     this means that if we sneak in pronoun strings as their referents, we won't point to the
     pronoun if the referent appears in the table; we may use this tho to point to the correct number
     """
-    with open(inp_file, "r") as f:
-        trdata = json.load(f)
-
     rulsrcs = linearized_preproc(box_preproc2(trdata))
 
     all_ents, players, teams, cities = get_ents(trdata)
@@ -1045,8 +1059,8 @@ def make_pointerfi(outfi, inp_file="rotowire/train.json", resolve_prons=False):
 
 # for coref prediction stuff
 # we'll use string equality for now
-def save_coref_task_data(outfile, inp_file="full_newnba_prepdata2.json"):
-    with open(inp_file, "r") as f:
+def save_coref_task_data(outfile, in_file="full_newnba_prepdata2.json"):
+    with open(in_file, "r") as f:
         data = json.load(f)
 
     all_ents, players, teams, cities = get_ents(data["train"])
@@ -1111,8 +1125,8 @@ def save_coref_task_data(outfile, inp_file="full_newnba_prepdata2.json"):
     h5fi.close()
 
     # write dicts
-    revvocab = dict(((v, k) for k, v in vocab.iteritems()))
-    revlabels = dict(((v, k) for k, v in labeldict.iteritems()))
+    revvocab = dict(((v, k) for k, v in vocab.items()))
+    revlabels = dict(((v, k) for k, v in labeldict.items()))
     with open(outfile.split('.')[0] + ".dict", "w+") as f:
         for i in range(1, len(revvocab) + 1):
             f.write("%s %d \n" % (revvocab[i], i))
@@ -1122,10 +1136,7 @@ def save_coref_task_data(outfile, inp_file="full_newnba_prepdata2.json"):
             f.write("%s %d \n" % (revlabels[i], i))
 
 
-def mask_output(input_path, path="rotowire"):
-    with open(os.path.join(path, "train.json"), "r") as f:
-        trdata = json.load(f)
-
+def mask_output(input_path, trdata):
     all_ents, players, teams, cities = get_ents(trdata)
     all_ents = set([x.replace(' ', '_') for x in all_ents])
 
@@ -1163,10 +1174,7 @@ def mask_output(input_path, path="rotowire"):
         f.write('\n'.join([' '.join(s) for s in masked_sents]))
 
 
-def save_ent(output_path, path="rotowire"):
-    with open(os.path.join(path, "train.json"), "r") as f:
-        trdata = json.load(f)
-
+def save_ent(output_path, trdata):
     all_ents, players, teams, cities = get_ents(trdata)
     all_ents = set([x.replace(' ', '_') for x in all_ents])
 
@@ -1176,33 +1184,36 @@ def save_ent(output_path, path="rotowire"):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Utility Functions')
-    parser.add_argument('-input_path', type=str, default="",
-                        help="path to input")
-    parser.add_argument('-output_fi', type=str, default="",
-                        help="desired path to output file")
-    parser.add_argument('-gen_fi', type=str, default="",
-                        help="path to file containing generated summaries")
-    parser.add_argument('-dict_pfx', type=str, default="roto-ie",
-                        help="prefix of .dict and .labels files")
-    parser.add_argument('-val_file', type=str, default=os.path.join("nba_data", "gold.valid.txt"),
-                        help="file as reference in prep_gen_data mode, of which every entry is in the form entry|attribute|value")
-    parser.add_argument('-mode', type=str, default='ptrs',
+    parser.add_argument('mode', type=str, default='ptrs',
                         choices=['ptrs', 'make_ie_data', 'prep_gen_data', 'extract_sent', 'mask', 'save_ent'],
                         help="what utility function to run")
+    parser.add_argument('--input_path', type=str, default="rotowire",
+                        help="path to input")
+    parser.add_argument('--output', type=str, default="",
+                        help="desired path to output file")
+    parser.add_argument('--gen', type=str, default="",
+                        help="path to file containing generated summaries")
+    parser.add_argument('--dict_pfx', type=str, default="roto-ie",
+                        help="prefix of .dict and .labels files")
+    parser.add_argument('--val_file', type=str, default=os.path.join("nba_data", "gold.valid.txt"),
+                        help="file as reference in prep_gen_data mode, of which every entry is in the form entry|attribute|value")
 
     args = parser.parse_args()
 
+    def read_trdata():
+        return get_json_dataset(arg.input_path, 'train')
+
     if args.mode == 'ptrs':
-        make_pointerfi(args.output_fi, inp_file=args.input_path)
+        make_pointerfi(args.output, read_trdata())
     elif args.mode == 'make_ie_data':
-        save_full_sent_data(args.output_fi, path=args.input_path, multilabel_train=True)
+        save_full_sent_data(args.output, path=args.input_path, multilabel_train=True)
     elif args.mode == 'prep_gen_data':
-        prep_generated_data(args.gen_fi, args.dict_pfx, args.output_fi,
-                            train_file=os.path.join(args.input_path, "train.json"),
+        prep_generated_data(args.gen, args.dict_pfx, args.output,
+                            trdata=read_trdata(),
                             val_file=args.val_file)
     elif args.mode == 'extract_sent':
-        extract_sentence_data(args.output_fi, path=args.input_path)
+        extract_sentence_data(args.output, path=args.input_path)
     elif args.mode == 'mask':
-        mask_output(args.input_path)
+        mask_output(args.input_path, read_trdata())
     elif args.mode == 'save_ent':
-        save_ent(args.output_fi)
+        save_ent(args.output, read_trdata())

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Text Content Manipulation
 3-gated copy net.

@@ -10,6 +10,7 @@ local stringx = require('pl.stringx')
 
 local cmd = torch.CmdLine()
 cmd:option('-datafile', 'roto-ie.h5', [[path to hdf5 file containing train/val data]])
+cmd:option('-config_models', 'config_models.lua', [[path to model config file]])
 cmd:option('-batchsize', 32, [[batch size]])
 cmd:option('-embed_size', 200, [[size of embeddings]])
 cmd:option('-num_filters', 200, [[number of convolutional filters]])
@@ -431,7 +432,7 @@ function eval_gens(predbatches, ignoreIdx, boxrestartidxs, convens, lstmens)
     local labelnums = predbatches[j].labelnums
     local preds
 
-    if convens then
+    if convens and #convens > 0 then
       local enpreds1 = convens[1]:forward({sent, ent_dists, num_dists})
       if opt.geom then
         enpreds1:log()
@@ -446,7 +447,7 @@ function eval_gens(predbatches, ignoreIdx, boxrestartidxs, convens, lstmens)
       preds = enpreds1
     end
 
-    if lstmens then
+    if lstmens and #lstmens > 0 then
       local enpreds1 = lstmens[1]:forward({sent, ent_dists, num_dists})
       if opt.geom then
         enpreds1:log()
@@ -522,28 +523,14 @@ end
 
 
 function set_up_saved_models()
-  local convens_paths = {
---    "conv1ie-ep6-94-74.t7",
---    "conv2ie-ep3-94-60.t7",
---    "conv3ie-ep8-95-72.t7"
-    "roto-convie-ep3-96-49",
-    "roto-convie-ep5-95-64",
-    "roto-convie-ep9-95-69"
-  }
-
-  local lstmens_paths = {
---    "blstm1ie-ep4-93-75.t7",
---    "blstm2ie-ep3-93-71.t7",
---    "blstm3ie-ep2-94-72.t7"
-    "roto-blstmie-ep2-95-70",
-    "roto-blstmie-ep9-91-79",
-    "roto-blstmie-ep3-94-72"
-  }
-  opt.embed_size = 200
-  opt.num_filters = 200
-  opt.conv_fc_layer_size = 500
-  opt.blstm_fc_layer_size = 700
-  return convens_paths, lstmens_paths
+  local config_models = {}
+  local f, err = loadfile(opt.config_models, "t", config_models)
+  if f then
+    f()
+    return config_models.convens_paths, config_models.lstmens_paths
+  else
+    print(err)
+  end
 end
 
 function main()

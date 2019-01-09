@@ -8,6 +8,11 @@ from collections import namedtuple
 from pyxdameraulevenshtein import normalized_damerau_levenshtein_distance
 from text2num import text2num, NumberException
 
+try:
+    range = xrange
+except:
+    pass
+
 Item = namedtuple("Item", ["number", "label", "entry"])
 
 full_names = ['Atlanta Hawks', 'Boston Celtics', 'Brooklyn Nets', 'Charlotte Hornets',
@@ -52,7 +57,7 @@ def dedup_items(item_list):
     """
     ret = []
     for i, t_i in enumerate(item_list):
-        for j in xrange(i):
+        for j in range(i):
             t_j = item_list[j]
             if item_eq(t_i, t_j):
                 break
@@ -111,13 +116,13 @@ def norm_dld(l1, l2):
     ascii_start = 0
     # make a string for l1
     # all items are unique...
-    s1 = ''.join((chr(ascii_start+i) for i in xrange(len(l1))))
+    s1 = ''.join((chr(ascii_start+i) for i in range(len(l1))))
     s2 = ''
     next_char = ascii_start + len(s1)
-    for j in xrange(len(l2)):
+    for j in range(len(l2)):
         found = None
         #next_char = chr(ascii_start+len(s1)+j)
-        for k in xrange(len(l1)):
+        for k in range(len(l1)):
             if item_eq(l2[j], l1[k]):
                 found = s1[k]
                 #next_char = s1[k]
