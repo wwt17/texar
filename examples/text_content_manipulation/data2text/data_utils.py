@@ -553,14 +553,12 @@ def save_full_sent_data(outfile, path, multilabel_train=False, nonedenom=0, back
     # make vocab and get labels
     word_counter = Counter()
     [word_counter.update(tup[0]) for tup in datasets['train']]
-    for k in word_counter.keys():
-        if word_counter[k] < 2:
-            del word_counter[k]  # will replace w/ unk
+    word_counter = Counter({word: cnt for word, cnt in word_counter.items() if cnt >= 2})
     word_counter["UNK"] = 1
-    vocab = {wrd: i + 1 for i, wrd in enumerate(word_counter.keys())}
-    labelset = {"NONE"}
+    vocab = {wrd: i + 1 for i, wrd in enumerate(sorted(word_counter.keys()))}
+    labelset = set()
     [labelset.update(rel.type for rel in tup[1]) for tup in datasets['train']]
-    labeldict = {label: i + 1 for i, label in enumerate(labelset)}
+    labeldict = {label: i + 1 for i, label in enumerate(sorted(labelset))}
 
     # save stuff
     stuffs = {stage: [] for stage in datasets}
@@ -788,8 +786,8 @@ def prep_generated_data(genfile, dict_pfx, outfile, trdata, val_file, rec_outfil
                 print(line_format(gold_stat), file=rec_outfile)
         ns = zip(*gold_stats)
         sums = tuple(map(sum, ns))
-        print('gold recall: {:.6f}, gold prec: {:.6f}'.format(
-            sums[1] / sums[0], sums[1] / sums[2]))
+        ret = sums[1] / sums[0], sums[1] / sums[2]
+        print('gold recall: {:.6f}, cand prec: {:.6f}'.format(*ret))
 
     else:
         sent_reset_indices = {0}  # sentence indices where a box/story is reset
@@ -816,6 +814,9 @@ def prep_generated_data(genfile, dict_pfx, outfile, trdata, val_file, rec_outfil
         h5fi["val{}s".format(name)] = np.array(content, dtype=int)
     h5fi["boxrestartidxs"] = np.array(np.array(rel_reset_indices), dtype=int)  # 1-indexed
     h5fi.close()
+
+    if not backup:
+        return ret
 
 
 ################################################################################

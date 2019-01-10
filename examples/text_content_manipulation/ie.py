@@ -26,14 +26,25 @@ from data2text.non_rg_metrics import calc_precrec, get_items
 data2text_dir = "data2text"
 
 
+def get_step_number(filename, verbose=False):
+    basename = os.path.basename(filename)
+    basename_parts = basename.split(".")
+    try:
+        return int(basename_parts[1][len("step"):])
+    except ValueError:
+        print("Cannot extract step number in {}".format(basename))
+        return 0
+
+
 def get_precrec(
         gold_file, hypo_file, inter_file, gpuid=0,
         dict_pfx=os.path.join(data2text_dir, "roto-ie"),
         json_path=os.path.join(data2text_dir, "rotowire"),
         write_record=True):
-    prep_generated_data(hypo_file, dict_pfx, inter_file,
-                        trdata=get_json_dataset(json_path, "train"),
-                        val_file=gold_file)
+    rough_res = prep_generated_data(
+        hypo_file, dict_pfx, inter_file,
+        trdata=get_json_dataset(json_path, "train"),
+        val_file=gold_file)
 
     ret = subprocess.call(
         ["th", "extractor.lua",
@@ -56,14 +67,10 @@ def get_precrec(
     if write_record:
         dirname, basename = os.path.split(hypo_file)
         basename_parts = basename.split(".")
-        try:
-            step = int(basename_parts[1][len("step"):])
-        except ValueError:
-            print("Cannot extract step number in {}".format(basename))
-            step = 0
+        step = get_step_number(hypo_file)
         stage = basename_parts[-2]
         with open(os.path.join(dirname, "ie_results.{}.txt".format(stage)), 'a') as results_file:
-            print("{}\t{:.5f}\t{:.5f}".format(step, precrec[0], precrec[1]), file=results_file)
+            print("{}\t{}".format(step, "\t".join(map("{:.6f}".format, rough_res + precrec))), file=results_file)
             results_file.flush()
 
     return precrec
@@ -76,7 +83,7 @@ if __name__ == "__main__":
     argparser.add_argument("--inter_file", default="")
     argparser.add_argument("--gpuid", type=int, default=0)
     args = argparser.parse_args()
-    args.hypo_files.sort(key=lambda hypo_file: int(os.path.basename(hypo_file).split('.')[1][len('step'):]))
+    args.hypo_files.sort(key=lambda hypo_file: (get_step_number(hypo_file, verbose=True), hypo_file))
     for hypo_file in args.hypo_files:
         print("processing {}:".format(hypo_file))
         if not args.inter_file:

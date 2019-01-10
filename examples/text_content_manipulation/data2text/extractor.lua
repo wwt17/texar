@@ -26,8 +26,7 @@ cmd:option('-epochs', 10, [[training epochs]])
 cmd:option('-gpuid', 1, [[gpu idx]])
 cmd:option('-savefile', '', [[path to save model to]])
 cmd:option('-preddata', '', [[path to hdf5 file containing candidate relations from generated data]])
-cmd:option('-dict_pfx', '', [[prefix of .dict and .labels files]])
-cmd:option('-ignore_idx', 11, [[idx of NONE class in *.labels file]])
+cmd:option('-dict_pfx', 'roto-ie', [[prefix of .dict and .labels files]])
 cmd:option('-just_eval', false, [[just eval generations]])
 cmd:option('-lstm', false, [[use a BLSTM rather than a convolutional model]])
 cmd:option('-geom', false, [[average models geometrically]])
@@ -264,7 +263,7 @@ function get_acc(model, valbatches)
 end
 
 
-function get_multilabel_acc(model, valbatches, ignoreIdx, convens, lstmens)
+function get_multilabel_acc(model, valbatches, convens, lstmens)
     if not g_maxes then
         g_maxes = torch.CudaTensor()
         g_argmaxes = torch.CudaLongTensor()
@@ -389,7 +388,7 @@ function get_args(sent, ent_dists, num_dists, dict)
 end
 
 
-function eval_gens(predbatches, ignoreIdx, boxrestartidxs, convens, lstmens)
+function eval_gens(predbatches, boxrestartidxs, convens, lstmens)
   local ivocab = get_dict(opt.dict_pfx .. ".dict", true)
   local ilabels = get_dict(opt.dict_pfx .. ".labels", true)
   local tupfile = assert(io.open(opt.preddata .. "-tuples.txt", 'w'))
@@ -538,6 +537,8 @@ function main()
     cutorch.manualSeed(opt.seed)
     cutorch.setDevice(opt.gpuid)
 
+    ignoreIdx = get_dict(opt.dict_pfx .. ".labels", false)["NONE"]
+
     local trbatches, valbatches, V_sizes, nlabels, pred_batches, pboxrestartidxs = prep_data(opt.batchsize)
     local emb_sizes = {opt.embed_size, opt.embed_size/2, opt.embed_size/2}
 
@@ -568,7 +569,7 @@ function main()
           end
       end
 
-      eval_gens(pred_batches, opt.ignore_idx, pboxrestartidxs, convens, lstmens)
+      eval_gens(pred_batches, pboxrestartidxs, convens, lstmens)
       return
     end
 
@@ -624,7 +625,7 @@ function main()
         end
         print("train loss:", loss/#trbatches)
 
-        local acc, rec = get_multilabel_acc(model, valbatches, opt.ignore_idx)
+        local acc, rec = get_multilabel_acc(model, valbatches)
         print("acc:", acc)
 
         local savefi = string.format("%s-ep%d-%d-%d", opt.savefile, i, math.floor(100*acc), math.floor(100*rec))
