@@ -553,14 +553,12 @@ def save_full_sent_data(outfile, path, multilabel_train=False, nonedenom=0, back
     # make vocab and get labels
     word_counter = Counter()
     [word_counter.update(tup[0]) for tup in datasets['train']]
-    for k in word_counter.keys():
-        if word_counter[k] < 2:
-            del word_counter[k]  # will replace w/ unk
+    word_counter = Counter({word: cnt for word, cnt in word_counter.items() if cnt >= 2})
     word_counter["UNK"] = 1
-    vocab = {wrd: i + 1 for i, wrd in enumerate(word_counter.keys())}
-    labelset = {"NONE"}
+    vocab = {wrd: i + 1 for i, wrd in enumerate(sorted(word_counter.keys()))}
+    labelset = set()
     [labelset.update(rel.type for rel in tup[1]) for tup in datasets['train']]
-    labeldict = {label: i + 1 for i, label in enumerate(labelset)}
+    labeldict = {label: i + 1 for i, label in enumerate(sorted(labelset))}
 
     # save stuff
     stuffs = {stage: [] for stage in datasets}
