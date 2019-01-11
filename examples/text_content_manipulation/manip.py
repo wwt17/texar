@@ -34,6 +34,7 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "expr_name is used.")
 flags.DEFINE_boolean("copy_x", False, "Whether to copy from x.")
 flags.DEFINE_boolean("copy_y_", False, "Whether to copy from y'.")
+flags.DEFINE_boolean("coverity", False, "Whether to add coverity onto the copynets.")
 flags.DEFINE_boolean("attn_x", False, "Whether to attend x.")
 flags.DEFINE_boolean("attn_y_", False, "Whether to attend y'.")
 flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
@@ -299,19 +300,35 @@ def build_model(data_batch, data):
                     tf.layers.dense(
                         memory_states,
                         units=output_size,
-                        activation=tf.nn.tanh,
+                        activation=None,
                         use_bias=False)
                     for _, memory_states, _ in memory_ids_states_lengths]
 
-                def get_copy_scores(query):
+                def get_copy_scores(query, coverity=None):
                     ret = []
 
                     if FLAGS.copy_y_:
-                        ret_y_ = tf.einsum("bim,bm->bi", memory_copy_states[len(ret)], query)
+                        memory = memory_copy_states[len(ret)]
+                        if coverity is not None:
+                            memory = memory + tf.layers.dense(
+                                coverity[len(ret)],
+                                units=output_size,
+                                activation=None,
+                                use_bias=False)
+                        memory = tf.nn.tanh(memory)
+                        ret_y_ = tf.einsum("bim,bm->bi", memory, query)
                         ret.append(ret_y_)
 
                     if FLAGS.copy_x:
-                        ret_x = tf.einsum("bim,bm->bi", memory_copy_states[len(ret)], query)
+                        memory = memory_copy_states[len(ret)]
+                        if coverity is not None:
+                            memory + memory + tf.layers.dense(
+                                coverity[len(ret)],
+                                units=output_size,
+                                activation=None,
+                                use_bias=False)
+                        memory = tf.nn.tanh(memory)
+                        ret_x = tf.einsum("bim,bm->bi", memory, query)
                         ret.append(ret_x)
 
                     if FLAGS.sd_path:
@@ -332,7 +349,9 @@ def build_model(data_batch, data):
                     for prefix in memory_prefixes],
                 input_ids=\
                     kwargs['input_ids'] if tgt_ref_flag is not None else None,
-                get_get_copy_scores=get_get_copy_scores)
+                get_get_copy_scores=get_get_copy_scores,
+                coverity_dim=config_model.coverity_dim if FLAGS.coverity else None,
+                coverity_rnn_cell_hparams=config_model.coverity_rnn_cell if FLAGS.coverity else None)
 
         decoder = tx.modules.BasicRNNDecoder(
             cell=cell, hparams=config_model.decoder,

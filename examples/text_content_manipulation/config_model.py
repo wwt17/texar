@@ -1,4 +1,5 @@
 dim = 384
+coverity_dim = 128
 
 
 def get_embedder_hparams(dim, name):
@@ -90,4 +91,11 @@ align_attention_decoder = {
             'num_units': dim,
         }
     }
+}
+
+coverity_rnn_cell = {
+    'type': 'GRUCell',
+    'kwargs': {
+        'num_units': coverity_dim,
+    },
 }
