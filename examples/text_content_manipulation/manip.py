@@ -34,7 +34,7 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "expr_name is used.")
 flags.DEFINE_boolean("copy_x", False, "Whether to copy from x.")
 flags.DEFINE_boolean("copy_y_", False, "Whether to copy from y'.")
-flags.DEFINE_boolean("coverity", False, "Whether to add coverity onto the copynets.")
+flags.DEFINE_boolean("coverage", False, "Whether to add coverage onto the copynets.")
 flags.DEFINE_boolean("attn_x", False, "Whether to attend x.")
 flags.DEFINE_boolean("attn_y_", False, "Whether to attend y'.")
 flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
@@ -304,14 +304,14 @@ def build_model(data_batch, data):
                         use_bias=False)
                     for _, memory_states, _ in memory_ids_states_lengths]
 
-                def get_copy_scores(query, coverity=None):
+                def get_copy_scores(query, coverities=None):
                     ret = []
 
                     if FLAGS.copy_y_:
                         memory = memory_copy_states[len(ret)]
-                        if coverity is not None:
+                        if coverities is not None:
                             memory = memory + tf.layers.dense(
-                                coverity[len(ret)],
+                                coverities[len(ret)],
                                 units=output_size,
                                 activation=None,
                                 use_bias=False)
@@ -321,9 +321,9 @@ def build_model(data_batch, data):
 
                     if FLAGS.copy_x:
                         memory = memory_copy_states[len(ret)]
-                        if coverity is not None:
+                        if coverities is not None:
                             memory + memory + tf.layers.dense(
-                                coverity[len(ret)],
+                                coverities[len(ret)],
                                 units=output_size,
                                 activation=None,
                                 use_bias=False)
@@ -350,8 +350,8 @@ def build_model(data_batch, data):
                 input_ids=\
                     kwargs['input_ids'] if tgt_ref_flag is not None else None,
                 get_get_copy_scores=get_get_copy_scores,
-                coverity_dim=config_model.coverity_dim if FLAGS.coverity else None,
-                coverity_rnn_cell_hparams=config_model.coverity_rnn_cell if FLAGS.coverity else None)
+                coverity_dim=config_model.coverity_dim if FLAGS.coverage else None,
+                coverity_rnn_cell_hparams=config_model.coverity_rnn_cell if FLAGS.coverage else None)
 
         decoder = tx.modules.BasicRNNDecoder(
             cell=cell, hparams=config_model.decoder,

@@ -7,8 +7,6 @@ import texar as tx
 
 
 def update_coverity(coverity, probs, h, cell):
-    print('update_coverity(coverity.shape={}, probs.shape={}, h.shape={})'.format(
-        coverity.shape, probs.shape, h.shape))
     shape = tf.shape(probs)
     coverity_shape = tf.shape(coverity)
     h = tf.broadcast_to(tf.expand_dims(h, 1), tf.concat([shape, [h.shape[-1]]], -1))
@@ -17,12 +15,11 @@ def update_coverity(coverity, probs, h, cell):
     h = tf.reshape(h, [-1, h.shape[-1]])
     _, coverity = cell(tf.concat([probs, h], -1), coverity)
     coverity = tf.reshape(coverity, coverity_shape)
-    print('update_coverity returns coverity.shape={}'.format(coverity.shape))
     return coverity
 
 
 class CopyNetWrapperState(collections.namedtuple(
-    "CopyNetWrapperState", ("cell_state", "time", "last_ids", "copy_probs", "coverity"))):
+    "CopyNetWrapperState", ("cell_state", "time", "last_ids", "copy_probs", "coverities"))):
 
     def clone(self, **kwargs):
         def with_same_shape(old, new):
@@ -61,12 +58,11 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                 memory_ids_states_lengths, self._cell.output_size)
             self._projection = tf.layers.Dense(self._vocab_size, use_bias=False)
             if coverity_dim is None:
-                self._coverity = False
+                self._coverage = False
                 self._coverity_dim = 0
             else:
-                self._coverity = True
+                self._coverage = True
                 self._coverity_dim = coverity_dim
-            if coverity_rnn_cell_hparams is not None:
                 self._coverity_rnn_cells = [
                     tx.core.get_rnn_cell(coverity_rnn_cell_hparams)
                     for _ in self._memory_ids_states_lengths]
@@ -83,6 +79,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                 lambda: self._input_ids[:, state.time],
                 lambda: last_ids)
         cell_state = state.cell_state
+        if self._coverage:
+            coverities = [tf.reshape(coverity, [tf.shape(coverity)[0], -1, self._coverity_dim]) for coverity in state.coverities]
 
         def _get_selective_read(memory_ids, memory_states, memory_lengths, prob):
             int_mask = tf.cast(
@@ -116,7 +114,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         # copy from memory
         copy_scores = self._get_copy_scores(
             outputs,
-            coverity=state.coverity if self._coverity else None)
+            coverities=coverities if self._coverage else None)
         exp_copy_scores = [
             tx.utils.mask_sequences(
                 tf.exp(tf.cast(copy_score, tf.float64)), memory_lengths)
@@ -146,16 +144,18 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
 
 
         copy_probs = []
-        if self._coverity:
-            new_coverity = []
+        if self._coverage:
+            new_coverities = []
         for i, ((memory_ids, _, _), exp_copy_score) in enumerate(zip(
                 self._memory_ids_states_lengths, exp_copy_scores)):
             copy_prob = exp_copy_score / Z_
             copy_probs.append(copy_prob)
-            if self._coverity:
-                new_coverity.append(update_coverity(
-                    state.coverity[i], tf.cast(copy_prob, tf.float32), outputs,
-                    self._coverity_rnn_cells[i]))
+            if self._coverage:
+                new_coverity = update_coverity(
+                    coverities[i], tf.cast(copy_prob, tf.float32), outputs,
+                    self._coverity_rnn_cells[i])
+                new_coverity = tf.reshape(new_coverity, [tf.shape(new_coverity)[0], -1])
+                new_coverities.append(new_coverity)
             probs_copy = steps_to_vocabs(memory_ids, copy_prob)
             probs = probs + probs_copy
 
@@ -165,9 +165,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             cell_state=cell_state,
             time=state.time+1, last_ids=last_ids,
             copy_probs=copy_probs,
-            coverity=new_coverity if self._coverity else state.coverity,
+            coverities=new_coverities if self._coverage else state.coverities,
         )
-        print(state.coverity)
         outputs = tf.cast(outputs, tf.float32)
         return outputs, state
 
@@ -184,8 +183,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             copy_probs=[
                 tf.shape(memory_ids)[1]
                 for memory_ids, _, _ in self._memory_ids_states_lengths],
-            coverity=[
-                tf.TensorShape([memory_ids.shape[1], self._coverity_dim])
+            coverities=[
+                tf.shape(memory_ids)[1] * self._coverity_dim
                 for memory_ids, _, _ in self._memory_ids_states_lengths],
         )
 
@@ -205,12 +204,12 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             copy_probs = [
                 tf.zeros([batch_size, tf.shape(memory_ids)[1]], tf.float64)
                 for memory_ids, _, _ in self._memory_ids_states_lengths]
-            coverity = [
-                tf.zeros([batch_size, tf.shape(memory_ids)[1], self._coverity_dim])
+            coverities = [
+                tf.zeros([batch_size, tf.shape(memory_ids)[1] * self._coverity_dim])
                 for memory_ids, _, _ in self._memory_ids_states_lengths]
             return CopyNetWrapperState(
                 cell_state=cell_state,
                 time=tf.zeros([], dtype=tf.int64), last_ids=last_ids,
                 copy_probs=copy_probs,
-                coverity=coverity,
+                coverities=coverities,
             )
