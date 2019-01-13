@@ -39,6 +39,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self, cell, memory_ids_states_lengths, vocab_size,
             get_get_copy_scores, input_ids=None, initial_cell_state=None,
             coverity_dim=None, coverity_rnn_cell_hparams=None,
+            disabled_vocab_size=1272,
             reuse=tf.AUTO_REUSE, name=None):
         super(CopyNetWrapper, self).__init__(name=name)
 
@@ -56,7 +57,9 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self._initial_cell_state = initial_cell_state
             self._get_copy_scores = get_get_copy_scores(
                 memory_ids_states_lengths, self._cell.output_size)
-            self._projection = tf.layers.Dense(self._vocab_size, use_bias=False)
+            self._disabled_vocab_size = disabled_vocab_size
+            self._projection = tf.layers.Dense(
+                self._vocab_size - self._disabled_vocab_size, use_bias=False)
             if coverity_dim is None:
                 self._coverage = False
                 self._coverity_dim = 0
@@ -127,7 +130,11 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         Z_ = tf.expand_dims(Z, 1)
 
         probs_generate = exp_generate_score / Z_
-        probs = probs_generate
+        disabled_probs = tf.zeros(
+            tf.concat([tf.shape(probs_generate)[:-1], [self._disabled_vocab_size]], -1),
+            dtype=tf.float64, name='disabled_probs')
+        probs = tf.concat(
+            [probs_generate[:, :4], disabled_probs, probs_generate[:, 4:]], -1)
 
 
         def steps_to_vocabs(encoder_input_ids, prob):
