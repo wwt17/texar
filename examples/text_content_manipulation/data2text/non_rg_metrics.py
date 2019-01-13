@@ -7,6 +7,7 @@ import argparse
 from collections import namedtuple
 from pyxdameraulevenshtein import normalized_damerau_levenshtein_distance
 from text2num import text2num, NumberException
+from utils import divide_or_const
 
 try:
     range = xrange
@@ -84,12 +85,6 @@ def get_items(fi):
                     line.strip().split())))),
             f))
 
-def divide_or_const(a, b, c=0.):
-    try:
-        return a / b
-    except ZeroDivisionError:
-        return c
-
 def calc_precrec(gold_items, pred_items, itemwise_outfile=None):
     total_tp, total_pred, total_gold = 0, 0, 0
     for gold_item_list, pred_item_list in zip(gold_items, pred_items):
@@ -105,8 +100,8 @@ def calc_precrec(gold_items, pred_items, itemwise_outfile=None):
                       rec=divide_or_const(tp, len(gold_item_list))),
                   file=itemwise_outfile)
 
-    avg_prec = total_tp / total_pred
-    avg_rec = total_tp / total_gold
+    avg_prec = divide_or_const(total_tp, total_pred)
+    avg_rec = divide_or_const(total_tp, total_gold)
     print("total_tp: {} total_pred: {} total_gold: {}".format(
         total_tp, total_pred, total_gold))
     print("prec: {} rec: {}".format(avg_prec, avg_rec))

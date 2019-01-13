@@ -13,6 +13,7 @@ import random
 import math
 from text2num import text2num, NumberException
 import argparse
+from utils import divide_or_const
 
 try:
     range = xrange
@@ -786,7 +787,7 @@ def prep_generated_data(genfile, dict_pfx, outfile, trdata, val_file, rec_outfil
                 print(line_format(gold_stat), file=rec_outfile)
         ns = zip(*gold_stats)
         sums = tuple(map(sum, ns))
-        ret = sums[1] / sums[0], sums[1] / sums[2]
+        ret = divide_or_const(sums[1], sums[0]), divide_or_const(sums[1], sums[2])
         print('gold recall: {:.6f}, cand prec: {:.6f}'.format(*ret))
 
     else:

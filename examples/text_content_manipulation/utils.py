@@ -40,3 +40,9 @@ def corpus_bleu(list_of_references, hypotheses, **kwargs):
         list_of_references, hypotheses,
         lowercase=True, return_all=False,
         **kwargs)
+
+def divide_or_const(a, b, c=0.):
+    try:
+        return a / b
+    except ZeroDivisionError:
+        return c
