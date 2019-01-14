@@ -35,6 +35,8 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
 flags.DEFINE_boolean("copy_x", False, "Whether to copy from x.")
 flags.DEFINE_boolean("copy_y_", False, "Whether to copy from y'.")
 flags.DEFINE_boolean("coverage", False, "Whether to add coverage onto the copynets.")
+flags.DEFINE_float("exact_cover_w", 0., "Weight of exact coverage loss.")
+flags.DEFINE_float("eps", 1e-10, "epsilon used to avoid log(0).")
 flags.DEFINE_boolean("attn_x", False, "Whether to attend x.")
 flags.DEFINE_boolean("attn_y_", False, "Whether to attend y'.")
 flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
@@ -351,7 +353,8 @@ def build_model(data_batch, data):
                     kwargs['input_ids'] if tgt_ref_flag is not None else None,
                 get_get_copy_scores=get_get_copy_scores,
                 coverity_dim=config_model.coverity_dim if FLAGS.coverage else None,
-                coverity_rnn_cell_hparams=config_model.coverity_rnn_cell if FLAGS.coverage else None)
+                coverity_rnn_cell_hparams=config_model.coverity_rnn_cell if FLAGS.coverage else None,
+                eps=FLAGS.eps)
 
         decoder = tx.modules.BasicRNNDecoder(
             cell=cell, hparams=config_model.decoder,
@@ -380,7 +383,7 @@ def build_model(data_batch, data):
         tgt_ref_flag = x_ref_flag
         tgt_str = 'sent{}'.format(ref_strs[tgt_ref_flag])
         sequence_length = data_batch['{}_length'.format(tgt_str)] - 1
-        decoder, tf_outputs, _, _ = get_decoder_and_outputs(
+        decoder, tf_outputs, final_state, _ = get_decoder_and_outputs(
             cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
             {'decoding_strategy': 'train_greedy',
              'inputs': sent_embeds[tgt_ref_flag],
@@ -400,6 +403,23 @@ def build_model(data_batch, data):
             w.set_shape(loss.get_shape())
             loss = w * loss
         loss = tf.reduce_mean(loss, 0)
+
+        if copy_flag and FLAGS.exact_cover_w != 0:
+            sum_copy_probs = list(map(lambda t: tf.cast(t, tf.float32), final_state.sum_copy_probs))
+            memory_lengths = [lengths for _, _, lengths in decoder.cell.memory_ids_states_lengths]
+            exact_coverage_losses = [
+                tf.reduce_mean(tf.reduce_sum(
+                    tx.utils.mask_sequences(
+                        tf.square(sum_copy_prob - 1.), memory_length),
+                    1))
+                for sum_copy_prob, memory_length in zip(sum_copy_probs, memory_lengths)]
+            print_xe_loss_op = tf.print(loss_name, 'xe loss:', loss)
+            with tf.control_dependencies([print_xe_loss_op]):
+                for i, exact_coverage_loss in enumerate(exact_coverage_losses):
+                    print_op = tf.print(loss_name, 'exact coverage loss {:d}:'.format(i), exact_coverage_loss)
+                    with tf.control_dependencies([print_op]):
+                        loss += FLAGS.exact_cover_w * exact_coverage_loss
+
         losses[loss_name] = loss
 
         return decoder, tf_outputs, loss
@@ -599,6 +619,8 @@ def main():
                 loss, summary = sess.run((train_op, summary_op), feed_dict)
 
                 step = tf.train.global_step(sess, global_step)
+
+                print('step {:d}: loss = {:.6f}'.format(step, loss))
 
                 summary_writer.add_summary(summary, step)
 

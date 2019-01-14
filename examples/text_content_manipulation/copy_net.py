@@ -1,4 +1,5 @@
 import collections
+import operator
 
 import tensorflow as tf
 from tensorflow.python.util import nest
@@ -19,7 +20,7 @@ def update_coverity(coverity, probs, h, cell):
 
 
 class CopyNetWrapperState(collections.namedtuple(
-    "CopyNetWrapperState", ("cell_state", "time", "last_ids", "copy_probs", "coverities"))):
+    "CopyNetWrapperState", ("cell_state", "time", "last_ids", "copy_probs", "sum_copy_probs", "coverities"))):
 
     def clone(self, **kwargs):
         def with_same_shape(old, new):
@@ -39,7 +40,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self, cell, memory_ids_states_lengths, vocab_size,
             get_get_copy_scores, input_ids=None, initial_cell_state=None,
             coverity_dim=None, coverity_rnn_cell_hparams=None,
-            disabled_vocab_size=1272,
+            disabled_vocab_size=1272, eps=0.,
             reuse=tf.AUTO_REUSE, name=None):
         super(CopyNetWrapper, self).__init__(name=name)
 
@@ -58,6 +59,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self._get_copy_scores = get_get_copy_scores(
                 memory_ids_states_lengths, self._cell.output_size)
             self._disabled_vocab_size = disabled_vocab_size
+            self._eps = eps
             self._projection = tf.layers.Dense(
                 self._vocab_size - self._disabled_vocab_size, use_bias=False)
             if coverity_dim is None:
@@ -130,7 +132,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         Z_ = tf.expand_dims(Z, 1)
 
         probs_generate = exp_generate_score / Z_
-        disabled_probs = tf.zeros(
+        disabled_probs = self._eps * tf.ones(
             tf.concat([tf.shape(probs_generate)[:-1], [self._disabled_vocab_size]], -1),
             dtype=tf.float64, name='disabled_probs')
         probs = tf.concat(
@@ -172,6 +174,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             cell_state=cell_state,
             time=state.time+1, last_ids=last_ids,
             copy_probs=copy_probs,
+            sum_copy_probs=list(map(operator.add, state.sum_copy_probs, copy_probs)),
             coverities=new_coverities if self._coverage else state.coverities,
         )
         outputs = tf.cast(outputs, tf.float32)
@@ -183,16 +186,19 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             It can be represented by an Integer, a TensorShape or a tuple of
             Integers or TensorShapes.
         """
+        copy_probs_size = [
+            tf.shape(memory_ids)[1]
+            for memory_ids, _, _ in self._memory_ids_states_lengths]
+        coverities_size = [
+            tf.shape(memory_ids)[1] * self._coverity_dim
+            for memory_ids, _, _ in self._memory_ids_states_lengths]
         return CopyNetWrapperState(
             cell_state=self._cell.state_size,
             time=tf.TensorShape([]),
             last_ids=tf.TensorShape([]),
-            copy_probs=[
-                tf.shape(memory_ids)[1]
-                for memory_ids, _, _ in self._memory_ids_states_lengths],
-            coverities=[
-                tf.shape(memory_ids)[1] * self._coverity_dim
-                for memory_ids, _, _ in self._memory_ids_states_lengths],
+            copy_probs=copy_probs_size,
+            sum_copy_probs=copy_probs_size,
+            coverities=coverities_size,
         )
 
     @property
@@ -218,5 +224,10 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                 cell_state=cell_state,
                 time=tf.zeros([], dtype=tf.int64), last_ids=last_ids,
                 copy_probs=copy_probs,
+                sum_copy_probs=copy_probs,
                 coverities=coverities,
             )
+
+    @property
+    def memory_ids_states_lengths(self):
+        return self._memory_ids_states_lengths
