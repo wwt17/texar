@@ -22,6 +22,7 @@ import os
 import subprocess
 from data2text.data_utils import prep_generated_data, get_json_dataset
 from data2text.non_rg_metrics import calc_precrec, get_items
+from utils import corpus_bleu, read_sents_from_file
 
 data2text_dir = "data2text"
 
@@ -37,7 +38,7 @@ def get_step_number(filename, verbose=False):
 
 
 def get_precrec(
-        gold_file, hypo_file, inter_file, gpuid=0,
+        gold_file, hypo_file, inter_file, ref_file, gpuid=0,
         dict_pfx=os.path.join(data2text_dir, "roto-ie"),
         json_path=os.path.join(data2text_dir, "rotowire"),
         write_record=True):
@@ -64,13 +65,18 @@ def get_precrec(
         precrec = calc_precrec(gold_items, pred_items,
                                itemwise_outfile=itemwise_outfile)
 
+    refs = read_sents_from_file(ref_file)
+    refs = [[ref] for ref in refs]
+    hypos = read_sents_from_file(hypo_file)
+    bleu = corpus_bleu(refs, hypos)
+
     if write_record:
         dirname, basename = os.path.split(hypo_file)
         basename_parts = basename.split(".")
         step = get_step_number(hypo_file)
         stage = basename_parts[-2]
         with open(os.path.join(dirname, "ie_results.{}.txt".format(stage)), 'a') as results_file:
-            print("{}\t{}".format(step, "\t".join(map("{:.6f}".format, rough_res + precrec))), file=results_file)
+            print("{}\t{}".format(step, "\t".join(map("{:.6f}".format, (bleu,) + precrec + rough_res))), file=results_file)
             results_file.flush()
 
     return precrec
@@ -79,6 +85,7 @@ def get_precrec(
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--gold_file", default=os.path.join("nba_data", "gold.test.txt"))
+    argparser.add_argument("--ref_file", default=os.path.join("nba_data", "nba.sent_ref.test.txt"))
     argparser.add_argument("hypo_files", nargs="+")
     argparser.add_argument("--inter_file", default="")
     argparser.add_argument("--gpuid", type=int, default=0)
@@ -93,4 +100,4 @@ if __name__ == "__main__":
                 s = s[:-len(suffix)]
             args.inter_file = s + ".h5"
         prec, rec = get_precrec(
-            args.gold_file, hypo_file, args.inter_file, gpuid=args.gpuid)
+            args.gold_file, hypo_file, args.inter_file, args.ref_file, gpuid=args.gpuid)

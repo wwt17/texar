@@ -7,8 +7,15 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
+import os
 import texar as tx
 from tensorflow.contrib.seq2seq import tile_batch
+from data2text.data_utils import get_train_ents, extract_entities, extract_numbers
+
+
+# load all entities
+all_ents, players, teams, cities = get_train_ents(path=os.path.join("data2text", "rotowire"), connect_multiwords=True)
+
 
 get_scope_name_of_train_op = 'train_{}'.format
 get_scope_name_of_summary_op = 'summary_{}'.format
@@ -35,11 +42,26 @@ def strip_special_tokens_of_list(text):
 
 batch_strip_special_tokens_of_list = batchize(strip_special_tokens_of_list)
 
+def replace_data_in_sent(sent, token="<UNK>"):
+    datas = extract_entities(sent, all_ents) + extract_numbers(sent)
+    datas.sort(key=lambda data: data.start, reverse=True)
+    for data in datas:
+        sent[data.start : data.end] = token
+    return sent
+
 def corpus_bleu(list_of_references, hypotheses, **kwargs):
+    list_of_references = [
+        list(map(replace_data_in_sent, refs))
+        for refs in list_of_references]
+    hypotheses = list(map(replace_data_in_sent, hypotheses))
     return tx.evals.corpus_bleu_moses(
         list_of_references, hypotheses,
         lowercase=True, return_all=False,
         **kwargs)
+
+def read_sents_from_file(file_name):
+    with open(file_name, 'r') as f:
+        return list(map(str.split, f))
 
 def divide_or_const(a, b, c=0.):
     try:

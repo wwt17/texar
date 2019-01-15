@@ -13,7 +13,12 @@ import random
 import math
 from text2num import text2num, NumberException
 import argparse
-from utils import divide_or_const
+
+def divide_or_const(a, b, c=0.):
+    try:
+        return a / b
+    except ZeroDivisionError:
+        return c
 
 try:
     range = xrange
@@ -131,6 +136,17 @@ def get_ents(dat):
 
     return all_ents, players, teams, cities
 
+def get_train_ents(path="rotowire", connect_multiwords=False):
+    datasets = {}
+    for stage in ["train"]:
+        with open(os.path.join(path, "{}.json".format(stage)), "r") as f:
+            datasets[stage] = json.load(f)
+    list_of_ents = get_ents(datasets["train"])
+    if connect_multiwords:
+        list_of_ents = tuple(
+            set(map(lambda s: s.replace(' ', '_'), ents))
+            for ents in list_of_ents)
+    return list_of_ents
 
 def deterministic_resolve(pron, players, teams, cities, curr_ents, prev_ents, max_back=1):
     # we'll just take closest compatible one.
@@ -157,7 +173,7 @@ def deterministic_resolve(pron, players, teams, cities, curr_ents, prev_ents, ma
     return None
 
 
-def extract_entities(sent, all_ents, prons, prev_ents=None, resolve_prons=False,
+def extract_entities(sent, all_ents, prons=prons, prev_ents=None, resolve_prons=False,
                      players=None, teams=None, cities=None):
     sent_ents = []
     i = 0

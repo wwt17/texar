@@ -20,10 +20,7 @@ try:
 except NameError:
     pass
 
-from data_utils import prons as prons
-from data_utils import get_ents as get_ents
-from data_utils import extract_entities as extract_entities
-from data_utils import extract_numbers as extract_numbers
+from data_utils import get_train_ents, extract_entities, extract_numbers
 
 
 # ignore_rels = ['HOME_AWAY', 'TEAM_NAME', 'PLAYER_NAME']
@@ -32,12 +29,7 @@ LARGE_NUM = 10000000
 
 
 # load all entities
-rotowire_path = "rotowire"
-datasets = {}
-for stage in ["train"]:
-    with open(os.path.join(rotowire_path, "{}.json".format(stage)), "r") as f:
-        datasets[stage] = json.load(f)
-all_ents, players, teams, cities = get_ents(datasets["train"])
+all_ents, players, teams, cities = get_train_ents()
 
 
 class Record(object):
@@ -97,7 +89,7 @@ class RecordDataset(object):
 
     @staticmethod
     def normalize_sent(tgt):
-        ents = extract_entities(tgt, all_ents, prons)
+        ents = extract_entities(tgt, all_ents)
         nums = extract_numbers(tgt)
         ranges = []
         for ent in ents:
