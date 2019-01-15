@@ -68,7 +68,8 @@ def get_precrec(
     refs = read_sents_from_file(ref_file)
     refs = [[ref] for ref in refs]
     hypos = read_sents_from_file(hypo_file)
-    bleu = corpus_bleu(refs, hypos)
+    bleu = corpus_bleu(refs, hypos) * 1e-2
+    print("BLEU: {:.2%}".format(bleu))
 
     if write_record:
         dirname, basename = os.path.split(hypo_file)
