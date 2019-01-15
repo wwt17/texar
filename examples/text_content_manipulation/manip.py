@@ -37,6 +37,7 @@ flags.DEFINE_boolean("copy_y_", False, "Whether to copy from y'.")
 flags.DEFINE_boolean("coverage", False, "Whether to add coverage onto the copynets.")
 flags.DEFINE_float("exact_cover_w", 0., "Weight of exact coverage loss.")
 flags.DEFINE_float("eps", 1e-10, "epsilon used to avoid log(0).")
+flags.DEFINE_integer("disabled_vocab_size", 1272, "Disabled vocab size.")
 flags.DEFINE_boolean("attn_x", False, "Whether to attend x.")
 flags.DEFINE_boolean("attn_y_", False, "Whether to attend y'.")
 flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
@@ -354,6 +355,7 @@ def build_model(data_batch, data):
                 get_get_copy_scores=get_get_copy_scores,
                 coverity_dim=config_model.coverity_dim if FLAGS.coverage else None,
                 coverity_rnn_cell_hparams=config_model.coverity_rnn_cell if FLAGS.coverage else None,
+                disabled_vocab_size=FLAGS.disabled_vocab_size,
                 eps=FLAGS.eps)
 
         decoder = tx.modules.BasicRNNDecoder(

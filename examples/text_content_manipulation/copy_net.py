@@ -40,7 +40,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             self, cell, memory_ids_states_lengths, vocab_size,
             get_get_copy_scores, input_ids=None, initial_cell_state=None,
             coverity_dim=None, coverity_rnn_cell_hparams=None,
-            disabled_vocab_size=1272, eps=0.,
+            disabled_vocab_size=0, eps=0.,
             reuse=tf.AUTO_REUSE, name=None):
         super(CopyNetWrapper, self).__init__(name=name)
 
