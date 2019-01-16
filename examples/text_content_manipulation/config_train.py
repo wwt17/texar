@@ -6,9 +6,6 @@ steps_per_eval = int(1e9)
 infer_beam_width = 5
 infer_max_decoding_length = 50
 
-add_bleu_weight = True
-rec_weight = 0.
-
 train = {
     'joint': {
         'optimizer': {

@@ -27,6 +27,9 @@ flags = tf.flags
 flags.DEFINE_string("config_data", "config_data_nba", "The data config.")
 flags.DEFINE_string("config_model", "config_model", "The model config.")
 flags.DEFINE_string("config_train", "config_train", "The training config.")
+flags.DEFINE_float("rec_w", 0.8, "Weight of reconstruction loss.")
+flags.DEFINE_boolean("add_bleu_weight", False, "Whether to multiply BLEU weight"
+                     " onto the first loss.")
 flags.DEFINE_string("expr_name", "nba", "The experiment name. "
                     "Used as the directory name of run.")
 flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
@@ -397,7 +400,7 @@ def build_model(data_batch, data):
             logits=tf_outputs.logits,
             sequence_length=sequence_length,
             average_across_batch=False)
-        if config_train.add_bleu_weight and y__ref_flag is not None \
+        if FLAGS.add_bleu_weight and y__ref_flag is not None \
                 and tgt_ref_flag is not None and y__ref_flag != tgt_ref_flag:
             w = tf.py_func(
                 batch_bleu, [sent_ids[y__ref_flag], tgt_sent_ids],
@@ -501,13 +504,13 @@ def build_model(data_batch, data):
 
     decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
     rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 'REC')
-    if config_train.rec_weight == 0:
+    rec_weight = FLAGS.rec_w
+    if rec_weight == 0:
         joint_loss = loss
-    elif config_train.rec_weight == 1:
+    elif rec_weight == 1:
         joint_loss = rec_loss
     else:
-        joint_loss = (1 - config_train.rec_weight) * loss \
-                   + config_train.rec_weight * rec_loss
+        joint_loss = (1 - rec_weight) * loss + rec_weight * rec_loss
     losses['joint'] = joint_loss
 
     tiled_decoder, bs_outputs = beam_searching(
