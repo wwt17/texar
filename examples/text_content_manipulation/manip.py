@@ -28,6 +28,7 @@ flags.DEFINE_string("config_data", "config_data_nba", "The data config.")
 flags.DEFINE_string("config_model", "config_model", "The model config.")
 flags.DEFINE_string("config_train", "config_train", "The training config.")
 flags.DEFINE_float("rec_w", 0.8, "Weight of reconstruction loss.")
+flags.DEFINE_float("rec_w_rate", 0., "Increasing rate of rec_w.")
 flags.DEFINE_boolean("add_bleu_weight", False, "Whether to multiply BLEU weight"
                      " onto the first loss.")
 flags.DEFINE_string("expr_name", "nba", "The experiment name. "
@@ -143,7 +144,7 @@ def batch_get_match_align(*texts):
     return np.array(batchize(get_match_align)(*texts), dtype=np.float32)
 
 
-def build_model(data_batch, data):
+def build_model(data_batch, data, step):
     batch_size, num_steps = [
         tf.shape(data_batch["value_text_ids"])[d] for d in range(2)]
     vocab = data.vocab('sent')
@@ -504,13 +505,8 @@ def build_model(data_batch, data):
 
     decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
     rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 'REC')
-    rec_weight = FLAGS.rec_w
-    if rec_weight == 0:
-        joint_loss = loss
-    elif rec_weight == 1:
-        joint_loss = rec_loss
-    else:
-        joint_loss = (1 - rec_weight) * loss + rec_weight * rec_loss
+    rec_weight = FLAGS.rec_w + FLAGS.rec_w_rate * tf.cast(step, tf.float32)
+    joint_loss = (1 - rec_weight) * loss + rec_weight * rec_loss
     losses['joint'] = joint_loss
 
     tiled_decoder, bs_outputs = beam_searching(
@@ -539,7 +535,7 @@ def main():
 
     train_ops, bs_outputs, \
             align_sents, align_sds, align_tf_outputs, align_bs_outputs \
-        = build_model(data_batch, datasets['train'])
+        = build_model(data_batch, datasets['train'], global_step)
 
     summary_ops = {
         name: tf.summary.merge(
