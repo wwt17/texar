@@ -407,193 +407,102 @@ def build_model(data_batch, data):
     def build_align(align_model='predict'):
         # align_model = copredict: predict three fields together
         # align_model = predict the third field
-        if align_model == 'copredict':
-            used_sent_fields = sent_fields
-            sent_field = used_sent_fields[0]
-            used_sd_fields = sd_fields
-            used_fields = sent_fields + sd_fields
-            ref_str = ref_strs[1]
-            sent_str = '{}{}'.format(sent_field, ref_str)
 
-            # embedders
-            embedders = {
-                name: tx.modules.WordEmbedder(
-                    vocab_size=data.vocab(name).size,
-                    hparams=config_model.embedders[name])
-                for name in used_fields}
+        used_sent_fields = sent_fields
+        sent_field = used_sent_fields[0]
+        input_sd_fields = ['entry', 'value']
+        output_sd_fields = ['attribute']
 
-            sent_texts = data_batch['{}_text'.format(sent_str)][:, 1:-1]
-            sent_ids = data_batch['{}_text_ids'.format(sent_str)][:, 1:-1]
-            sent_embeds = embedders[sent_field](sent_ids)
-            sent_sequence_length = data_batch['{}_length'.format(sent_str)] - 2
-            sent_enc_outputs, _ = sent_encoder(
-                sent_embeds, sequence_length=sent_sequence_length)
-            sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
+        used_sd_fields = input_sd_fields + output_sd_fields
+        used_fields = sent_fields + sd_fields
+        ref_str = ref_strs[1]
+        sent_str = '{}{}'.format(sent_field, ref_str)
 
-            sd_texts = {}
-            input_sd_embeds = {}
-            target_sd_ids = {}
-            sd_sequence_lengths = {}
+        # embedders
+        embedders = {
+            name: tx.modules.WordEmbedder(
+                vocab_size=data.vocab(name).size,
+                hparams=config_model.embedders[name])
+            for name in used_fields}
 
-            for sd_field in used_sd_fields:
-                sd_str = '{}{}'.format(sd_field, ref_str)
-                sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)][:, :-1]
-                sd_ids = data_batch['{}_text_ids'.format(sd_str)]
-                input_sd_embeds[sd_field] = embedders[sd_field](sd_ids[:, :-1])
-                target_sd_ids[sd_field] = sd_ids[:, 1:]
-                sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
+        sent_texts = data_batch['{}_text'.format(sent_str)][:, 1:-1]
+        sent_ids = data_batch['{}_text_ids'.format(sent_str)][:, 1:-1]
+        sent_embeds = embedders[sent_field](sent_ids)
+        sent_sequence_length = data_batch['{}_length'.format(sent_str)] - 2
+        sent_enc_outputs, _ = sent_encoder(
+            sent_embeds, sequence_length=sent_sequence_length)
+        sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
 
-            input_sd_embeds = tf.concat(
-                [input_sd_embeds[sd_field] for sd_field in used_sd_fields], -1)
+        sd_texts = {}
+        input_sd_embeds = {}
+        target_sd_ids = {}
+        sd_sequence_lengths = {}
 
-            rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
-            attention_decoder = tx.modules.AttentionRNNDecoder(
-                cell=rnn_cell,
-                memory=sent_enc_outputs,
-                memory_sequence_length=sent_sequence_length,
-                output_layer=tf.identity,
-                hparams=config_model.align_attention_decoder)
+        for sd_field in input_sd_fields:
+            sd_str = '{}{}'.format(sd_field, ref_str)
+            sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)]
+            sd_ids = data_batch['{}_text_ids'.format(sd_str)]
+            input_sd_embeds[sd_field] = embedders[sd_field](sd_ids[:, :-1])
+            sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
 
-            tf_outputs, _, tf_sequence_length = attention_decoder(
-                decoding_strategy='train_greedy',
-                inputs=input_sd_embeds,
-                embedding=None,
-                sequence_length=sd_sequence_lengths[used_sd_fields[0]])
-            cell_outputs = tf_outputs.cell_output
+        for sd_field in output_sd_fields:
+            sd_str = '{}{}'.format(sd_field, ref_str)
+            sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)]
+            sd_ids = data_batch['{}_text_ids'.format(sd_str)]
+            target_sd_ids[sd_field] = sd_ids[:, 1:]
+            sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
 
-            projection_name = 'align_projection_{}'.format
+        input_sd_embeds = tf.concat(
+            [input_sd_embeds[sd_field] for sd_field in input_sd_fields], -1)
 
-            losses = []
-            for sd_field in used_sd_fields:
-                projection = tf.layers.Dense(
-                    data.vocab(sd_field).size,
-                    name=projection_name(sd_field))
-                logits = projection(cell_outputs)
-                loss = tx.losses.sequence_sparse_softmax_cross_entropy(
-                    labels=target_sd_ids[sd_field],
-                    logits=logits,
-                    sequence_length=sd_sequence_lengths[sd_field])
-                losses.append(loss)
-            loss = tf.reduce_sum(losses)
+        rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
 
-            # TODO: modify the inference code to match multiple sd fields
-            bs_outputs_lengths = {}
-            for sd_field in used_sd_fields:
-                start_tokens = tf.ones_like(sd_sequence_lengths[sd_field]) * \
-                    data.vocab(sd_field).bos_token_id
-                end_token = data.vocab(sd_field).eos_token_id
-                projection = tf.layers.Dense(
-                    data.vocab(sd_field).size,
-                    name=projection_name(sd_field))
-                bs_outputs, _, bs_lengths = tx.modules.beam_search_decode(
-                    decoder_or_cell=attention_decoder,
-                    embedding=embedders[sd_field],
-                    start_tokens=start_tokens,
-                    end_token=end_token,
-                    max_decoding_length=config_train.infer_max_decoding_length,
-                    beam_width=config_train.infer_beam_width,
-                    output_layer=projection)
-                bs_outputs_lengths[sd_field] = (bs_outputs, bs_lengths)
 
-        elif align_model == 'predict':
+        attention_decoder = tx.modules.AttentionRNNDecoder(
+            cell=rnn_cell,
+            memory=sent_enc_outputs,
+            memory_sequence_length=sent_sequence_length,
+            output_layer=tf.identity,
+            hparams=config_model.align_attention_decoder)
 
-            used_sent_fields = sent_fields
-            sent_field = used_sent_fields[0]
-            input_sd_fields = ['entry', 'value']
-            output_sd_fields = ['attribute']
+        tf_outputs, _, tf_sequence_length = attention_decoder(
+            decoding_strategy='train_greedy',
+            inputs=input_sd_embeds,
+            embedding=None,
+            sequence_length=sd_sequence_lengths[used_sd_fields[0]])
+        cell_outputs = tf_outputs.cell_output
 
-            used_sd_fields = input_sd_fields + output_sd_fields
-            used_fields = sent_fields + sd_fields
-            ref_str = ref_strs[1]
-            sent_str = '{}{}'.format(sent_field, ref_str)
+        projection_name = 'align_projection_{}'.format
 
-            # embedders
-            embedders = {
-                name: tx.modules.WordEmbedder(
-                    vocab_size=data.vocab(name).size,
-                    hparams=config_model.embedders[name])
-                for name in used_fields}
+        sd_field = output_sd_fields[0]
+        projection = tf.layers.Dense(
+            data.vocab(sd_field).size,
+            name=projection_name(sd_field))
+        """
+        print_op = tf.print(
+            [tf.shape(input_sd_embeds),
+             sd_sequence_lengths[used_sd_fields[0]],
+             tf.shape(sent_enc_outputs)])
+        """
+        logits = projection(cell_outputs)
+        preds = tf.argmax(logits, axis=-1)
+        labels = tf.cast(target_sd_ids[sd_field], preds.dtype)
+        is_target = tf.to_float(tf.not_equal(labels, 
+            data.vocab(sd_field).pad_token_id))
 
-            sent_texts = data_batch['{}_text'.format(sent_str)][:, 1:-1]
-            sent_ids = data_batch['{}_text_ids'.format(sent_str)][:, 1:-1]
-            sent_embeds = embedders[sent_field](sent_ids)
-            sent_sequence_length = data_batch['{}_length'.format(sent_str)] - 2
-            sent_enc_outputs, _ = sent_encoder(
-                sent_embeds, sequence_length=sent_sequence_length)
-            sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
-
-            sd_texts = {}
-            input_sd_embeds = {}
-            target_sd_ids = {}
-            sd_sequence_lengths = {}
-
-            for sd_field in input_sd_fields:
-                sd_str = '{}{}'.format(sd_field, ref_str)
-                sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)][:, :-1]
-                sd_ids = data_batch['{}_text_ids'.format(sd_str)]
-                input_sd_embeds[sd_field] = embedders[sd_field](sd_ids[:, :-1])
-                sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
-
-            for sd_field in output_sd_fields:
-                sd_str = '{}{}'.format(sd_field, ref_str)
-                sd_texts[sd_field] = data_batch['{}_text'.format(sd_str)][:, :-1]
-                target_sd_ids[sd_field] = sd_ids[:, 1:]
-                sd_sequence_lengths[sd_field] = data_batch['{}_length'.format(sd_str)] - 1
-
-            input_sd_embeds = tf.concat(
-                [input_sd_embeds[sd_field] for sd_field in input_sd_fields], -1)
-
-            rnn_cell = tx.core.layers.get_rnn_cell(config_model.align_rnn_cell)
-            attention_decoder = tx.modules.AttentionRNNDecoder(
-                cell=rnn_cell,
-                memory=sent_enc_outputs,
-                memory_sequence_length=sent_sequence_length,
-                output_layer=tf.identity,
-                hparams=config_model.align_attention_decoder)
-
-            tf_outputs, _, tf_sequence_length = attention_decoder(
-                decoding_strategy='train_greedy',
-                inputs=input_sd_embeds,
-                embedding=None,
-                sequence_length=sd_sequence_lengths[used_sd_fields[0]])
-            cell_outputs = tf_outputs.cell_output
-
-            projection_name = 'align_projection_{}'.format
-
-            losses = []
-            for sd_field in output_sd_fields:
-                projection = tf.layers.Dense(
-                    data.vocab(sd_field).size,
-                    name=projection_name(sd_field))
-                logits = projection(cell_outputs)
-                loss = tx.losses.sequence_sparse_softmax_cross_entropy(
-                    labels=target_sd_ids[sd_field],
-                    logits=logits,
-                    sequence_length=sd_sequence_lengths[sd_field])
-                losses.append(loss)
-            loss = tf.reduce_sum(losses)
-
-            # TODO: modify the inference code to match multiple sd fields
-            bs_outputs_lengths = {}
-            for sd_field in output_sd_fields:
-                start_tokens = tf.ones_like(sd_sequence_lengths[sd_field]) * \
-                    data.vocab(sd_field).bos_token_id
-                end_token = data.vocab(sd_field).eos_token_id
-                projection = tf.layers.Dense(
-                    data.vocab(sd_field).size,
-                    name=projection_name(sd_field))
-                bs_outputs, _, bs_lengths = tx.modules.beam_search_decode(
-                    decoder_or_cell=attention_decoder,
-                    embedding=embedders[sd_field],
-                    start_tokens=start_tokens,
-                    end_token=end_token,
-                    max_decoding_length=config_train.infer_max_decoding_length,
-                    beam_width=config_train.infer_beam_width,
-                    output_layer=projection)
-                bs_outputs_lengths[sd_field] = (bs_outputs, bs_lengths)
+        matched_cnts = tf.reduce_sum(
+            tf.to_float(tf.equal(preds, labels)) * is_target,
+            axis=1)
+        valid_cnts = tf.reduce_sum(is_target, axis=1)
+        
+        # with tf.control_dependencies([print_op]):
+        loss = tx.losses.sequence_sparse_softmax_cross_entropy(
+            labels=target_sd_ids[sd_field],
+            logits=logits,
+            sequence_length=sd_sequence_lengths[sd_field])
 
         return (sent_texts, sent_sequence_length), (sd_texts, sd_sequence_lengths),\
-               loss, tf_outputs, bs_outputs_lengths
+               loss, tf_outputs, preds, matched_cnts, valid_cnts
 
 
     decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
@@ -610,7 +519,8 @@ def build_model(data_batch, data):
     tiled_decoder, bs_outputs = beam_searching(
         rnn_cell, 1, 0, config_train.infer_beam_width)
 
-    align_sents, align_sds, align_loss, align_tf_outputs, align_bs_outputs_lengths = \
+    align_sents, align_sds, align_loss, align_tf_outputs, align_preds, \
+        align_matched, align_valids = \
         build_align()
     losses['align'] = align_loss
 
@@ -619,7 +529,8 @@ def build_model(data_batch, data):
         for name in config_train.train}
 
     return train_ops, bs_outputs, \
-           align_sents, align_sds, align_tf_outputs, align_bs_outputs_lengths
+           align_sents, align_sds, align_tf_outputs, align_preds,\
+           align_matched, align_valids
 
 
 def main():
@@ -632,7 +543,8 @@ def main():
     global_step = tf.train.get_or_create_global_step()
 
     train_ops, bs_outputs, \
-            align_sents, align_sds, align_tf_outputs, align_bs_outputs_lengths \
+            align_sents, align_sds, align_tf_outputs, align_preds,\
+            align_matched, align_valids\
         = build_model(data_batch, datasets['train'])
 
     summary_ops = {
@@ -720,14 +632,21 @@ def main():
 
         while True:
             try:
-                loss, summary = sess.run((train_op, summary_op), feed_dict)
-
+                loss, _m, _v, summary = sess.run(
+                    (train_op, 
+                     align_matched,
+                     align_valids,
+                     summary_op),
+                    feed_dict)
+                _accu = np.sum(_m) / np.sum(_v)
                 step = tf.train.global_step(sess, global_step)
 
+                _summary = tf.Summary()
+                _summary.value.add(
+                    tag='{}/align_accu'.format(mode),
+                    simple_value=_accu)
+                summary_writer.add_summary(_summary, step)
                 summary_writer.add_summary(summary, step)
-
-                if step % config_train.steps_per_eval == 0:
-                    _eval_epoch(sess, summary_writer, 'val')
 
             except tf.errors.OutOfRangeError:
                 break
@@ -736,112 +655,55 @@ def main():
 
 
     def _eval_epoch(sess, summary_writer, mode):
-        global best_ever_val_bleu
-
-        if FLAGS.align:
-            return 0.
-
         print('in _eval_epoch with mode {}'.format(mode))
 
         data_iterator.restart_dataset(sess, mode)
         feed_dict = {
             tx.global_mode(): tf.estimator.ModeKeys.EVAL,
-            data_iterator.handle: data_iterator.get_handle(sess, mode)
+            data_iterator.handle: data_iterator.get_handle(sess, mode),
         }
-
-        step = tf.train.global_step(sess, global_step)
-
-        ref_hypo_pairs = []
-        fetches = []
-        target_field = sent_fields[0] if not FLAGS.align else sd_fields[0]
-        fetches.extend(data_batch['{}{}_text'.format(target_field, ref_str)]
-                       for ref_str in ref_strs)
-        fetches.append(
-            (bs_outputs if not FLAGS.align else
-             align_bs_outputs_lengths[target_field][0]).predicted_ids)
-
-        if not os.path.exists(dir_model):
-            os.makedirs(dir_model)
-
-        hypo_file_name = os.path.join(
-            dir_model, "hypos.step{}.{}.txt".format(step, mode))
-        hypo_file = open(hypo_file_name, "w")
-
-        cnt = 0
+        _matched_cnts = []
+        _valid_cnts = []
+        _labels = []
+        _vocab = datasets['train'].vocab('attribute')
+        _map_ids_to_tokens = _vocab.map_ids_to_tokens_py
+        _predictions = []
         while True:
             try:
-                target_texts, output_ids = sess.run(fetches, feed_dict)
-                target_texts = [
-                    tx.utils.strip_special_tokens(
-                        texts[:, 1:].tolist(), is_token_list=True)
-                    for texts in target_texts]
-                output_ids = output_ids[:, :, 0]
-                output_texts = tx.utils.map_ids_to_strs(
-                    ids=output_ids.tolist(), vocab=datasets[mode].vocab('sent'),
-                    join=False)
-
-                target_texts = list(zip(*target_texts))
-
-                for ref, hypo in zip(target_texts, output_texts):
-                    if cnt < 10:
-                        print('cnt = {}'.format(cnt))
-                        for i, s in enumerate(ref):
-                            print('ref{}: {}'.format(i, ' '.join(s)))
-                        print('hypo: {}'.format(' '.join(hypo)))
-                    print(' '.join(hypo), file=hypo_file)
-                    cnt += 1
-                print('processed {} samples'.format(cnt))
-
-                ref_hypo_pairs.extend(zip(target_texts, output_texts))
-
+                _align_sds, _preds, _matched, _valids = sess.run(
+                    (align_sds, align_preds, align_matched, align_valids),
+                    feed_dict)
+                _predictions.extend(
+                    _map_ids_to_tokens(_preds).tolist()
+                )
+                _matched_cnts.extend(_matched.tolist())
+                _valid_cnts.extend(_valids.tolist())
+                _labels.extend(
+                    _align_sds[0]['attribute'][:, 1:].tolist())
             except tf.errors.OutOfRangeError:
                 break
+        fname = os.path.join(expr_name, '{}_output'.format(mode))
+        _predictions = list_strip_eos(_predictions,
+                                      _vocab.eos_token)
+        _labels = list_strip_eos(_labels,
+                                 _vocab.eos_token)
+                    
+        _predictions = tx.utils.str_join(_predictions)
+        _labels = tx.utils.str_join(_labels)
+        hyp_fn, ref_fn = tx.utils.write_paired_text(
+            _predictions, _labels, fname, mode='s')
+        with open(os.path.join(expr_name, '{}_accu.txt'.format(mode)),'w+') as fout:
+            for _m, _v in zip(_matched_cnts, _valid_cnts):
+                fout.write('matched:{} valid:{} accu:{}\n'.format(
+                _m,
+                _v,
+                _m/float(_v)))
+        eval_accu = np.sum(_matched_cnts) / np.sum(_valid_cnts)
+        print('{} accuracy:{}'.format(mode, eval_accu))
 
-        hypo_file.close()
-
-        if FLAGS.eval_ie:
-            gold_file_name = os.path.join(
-                config_data.dst_dir, "gold.{}.txt".format(
-                    config_data.mode_to_filemode[mode]))
-            inter_file_name = "{}.h5".format(hypo_file_name[:-len(".txt")])
-            prec, rec = get_precrec(
-                gold_file_name, hypo_file_name, inter_file_name,
-                gpuid=FLAGS.eval_ie_gpuid)
-
-        refs, hypos = zip(*ref_hypo_pairs)
-        bleus = []
-        get_bleu_name = '{}_BLEU'.format
-        print('In {} mode:'.format(mode))
-        for i in range(len(fetches[0])):
-            refs_ = list(map(lambda ref: ref[i:i+1], refs))
-            bleu = corpus_bleu(refs_, hypos)
-            print('{}: {:.2f}'.format(get_bleu_name(i), bleu))
-            bleus.append(bleu)
-
-        summary = tf.Summary()
-        for i, bleu in enumerate(bleus):
-            summary.value.add(
-                tag='{}/{}'.format(mode, get_bleu_name(i)), simple_value=bleu)
-        if FLAGS.eval_ie:
-            for name, value in {'precision': prec, 'recall': rec}.items():
-                summary.value.add(tag='{}/{}'.format(mode, name),
-                                  simple_value=value)
-        summary_writer.add_summary(summary, step)
-        summary_writer.flush()
-
-        bleu = bleus[0]
-        if mode == 'val':
-            if bleu > best_ever_val_bleu:
-                best_ever_val_bleu = bleu
-                print('updated best val bleu: {}'.format(bleu))
-
-                _save_to(ckpt_best, step)
-
-        print('end _eval_epoch')
-        return bleu
-
-
-    with tf.Session() as sess:
+    tf_config = tf.ConfigProto()
+    tf_config.gpu_options.allow_growth=True
+    with tf.Session(config=tf_config) as sess:
         sess.run(tf.global_variables_initializer())
         sess.run(tf.local_variables_initializer())
         sess.run(tf.tables_initializer())
@@ -855,6 +717,8 @@ def main():
             _get_alignment(sess, 'train')
             return
 
+        sess.graph.finalize()
+
         summary_writer = tf.summary.FileWriter(
             dir_summary, sess.graph, flush_secs=30)
 
@@ -864,25 +728,16 @@ def main():
             train_op = train_ops[name]
             summary_op = summary_ops[name]
 
-            val_bleu = _eval_epoch(sess, summary_writer, 'val')
-            test_bleu = _eval_epoch(sess, summary_writer, 'test')
+            _eval_epoch(sess, summary_writer, 'val')
+            _eval_epoch(sess, summary_writer, 'test')
 
             step = tf.train.global_step(sess, global_step)
-
-            print('epoch: {} ({}), step: {}, '
-                  'val BLEU: {:.2f}, test BLEU: {:.2f}'.format(
-                epoch, name, step, val_bleu, test_bleu))
-
             _train_epoch(sess, summary_writer, 'train', train_op, summary_op)
 
             epoch += 1
 
             step = tf.train.global_step(sess, global_step)
             _save_to(ckpt_model, step)
-
-        test_bleu = _eval_epoch(sess, summary_writer, 'test')
-        print('epoch: {}, test BLEU: {}'.format(epoch, test_bleu))
-
 
 if __name__ == '__main__':
     main()

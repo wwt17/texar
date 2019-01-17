@@ -21,6 +21,15 @@ ref_strs = ['', '_ref']
 
 DataItem = collections.namedtuple('DataItem', sd_fields)
 
+def list_strip_eos(list_, eos_token):
+    """Strips EOS token from a list of lists of tokens.
+    """
+    list_strip = []
+    for elem in list_:
+        if eos_token in elem:
+            elem = elem[:elem.index(eos_token)]
+        list_strip.append(elem)
+    return list_strip
 
 def pack_sd(paired_texts):
     return [DataItem(*_) for _ in zip(*paired_texts)]

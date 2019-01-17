@@ -1,5 +1,5 @@
 dim = 384
-
+import tensorflow as tf
 
 def get_embedder_hparams(dim, name):
     return {
@@ -61,7 +61,8 @@ decoder = {
 attention_decoder = {
     'name': 'attention_decoder',
     'attention': {
-        'type': 'LuongAttention',
+        'type': tf.contrib.seq2seq.LuongMonotonicAttention,
+        # 'type': 'LuongAttention',
         'kwargs': {
             'num_units': dim,
         }
@@ -85,7 +86,8 @@ align_rnn_cell = {
 align_attention_decoder = {
     'name': 'align_attention_decoder',
     'attention': {
-        'type': 'LuongAttention',
+        'type': tf.contrib.seq2seq.LuongMonotonicAttention,
+        #'type': 'LuongAttention',
         'kwargs': {
             'num_units': dim,
         }
