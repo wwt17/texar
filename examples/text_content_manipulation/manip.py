@@ -16,6 +16,7 @@ import numpy as np
 import tensorflow as tf
 import texar as tx
 import pickle
+from collections import namedtuple
 from copy_net import CopyNetWrapper
 from texar.core import get_train_op
 from utils import *
@@ -27,10 +28,7 @@ flags = tf.flags
 flags.DEFINE_string("config_data", "config_data_nba", "The data config.")
 flags.DEFINE_string("config_model", "config_model", "The model config.")
 flags.DEFINE_string("config_train", "config_train", "The training config.")
-flags.DEFINE_float("rec_w", 0.8, "Weight of reconstruction loss.")
-flags.DEFINE_float("rec_w_rate", 0., "Increasing rate of rec_w.")
-flags.DEFINE_boolean("add_bleu_weight", False, "Whether to multiply BLEU weight"
-                     " onto the first loss.")
+flags.DEFINE_float("bt_w", 1., "Back-translation weight.")
 flags.DEFINE_string("expr_name", "nba", "The experiment name. "
                     "Used as the directory name of run.")
 flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
@@ -44,9 +42,6 @@ flags.DEFINE_float("eps", 1e-10, "epsilon used to avoid log(0).")
 flags.DEFINE_integer("disabled_vocab_size", 1272, "Disabled vocab size.")
 flags.DEFINE_boolean("attn_x", False, "Whether to attend x.")
 flags.DEFINE_boolean("attn_y_", False, "Whether to attend y'.")
-flags.DEFINE_boolean("sd_path", False, "Whether to add structured data path.")
-flags.DEFINE_float("sd_path_multiplicator", 1., "Structured data path multiplicator.")
-flags.DEFINE_float("sd_path_addend", 0., "Structured data path addend.")
 flags.DEFINE_boolean("align", False, "Whether it is to get alignment.")
 flags.DEFINE_boolean("output_align", False, "Whether to output alignment.")
 flags.DEFINE_boolean("verbose", False, "verbose.")
@@ -71,6 +66,10 @@ dir_model = os.path.join(expr_name, 'ckpt')
 dir_best = os.path.join(expr_name, 'ckpt-best')
 ckpt_model = os.path.join(dir_model, 'model.ckpt')
 ckpt_best = os.path.join(dir_best, 'model.ckpt')
+
+
+class Encoded(namedtuple('Encoded', ['ids', 'embeds', 'enc_outputs', 'length'])):
+    pass
 
 
 def get_optimistic_restore_variables(ckpt_path, graph=tf.get_default_graph()):
@@ -189,41 +188,39 @@ def build_model(data_batch, data, step):
         return tf.concat(outputs, -1)
 
 
-    def encode(ref_str):
-        sent_ids = data_batch['sent{}_text_ids'.format(ref_str)]
-        sent_embeds = embedders['sent'](sent_ids)
-        sent_sequence_length = data_batch['sent{}_length'.format(ref_str)]
-        sent_enc_outputs, _ = sent_encoder(
-            sent_embeds, sequence_length=sent_sequence_length)
-        sent_enc_outputs = concat_encoder_outputs(sent_enc_outputs)
+    def encode_sent(ids, length):
+        embeds = embedders[sent_fields[0]](ids)
+        enc_outputs, _ = sent_encoder(embeds, sequence_length=length)
+        enc_outputs = concat_encoder_outputs(enc_outputs)
+        return Encoded(ids, embeds, enc_outputs, length)
 
-        sd_ids = {
-            field: data_batch['{}{}_text_ids'.format(field, ref_str)][:, 1:-1]
-            for field in sd_fields}
-        sd_embeds = tf.concat(
-            [embedders[field](sd_ids[field]) for field in sd_fields],
+
+    def encode_sd(ids, length):
+        embeds = tf.concat(
+            [embedders[field](ids[field]) for field in sd_fields],
             axis=-1)
-        sd_sequence_length = data_batch[
-            '{}{}_length'.format(sd_fields[0], ref_str)] - 2
-        sd_enc_outputs, _ = sd_encoder(
-            sd_embeds, sequence_length=sd_sequence_length)
-        sd_enc_outputs = concat_encoder_outputs(sd_enc_outputs)
-
-        return sent_ids, sent_embeds, sent_enc_outputs, sent_sequence_length, \
-            sd_ids, sd_embeds, sd_enc_outputs, sd_sequence_length
+        enc_outputs, _ = sd_encoder(embeds, sequence_length=length)
+        enc_outputs = concat_encoder_outputs(enc_outputs)
+        return Encoded(ids, embeds, enc_outputs, length)
 
 
-    encode_results = [encode(ref_str) for ref_str in ref_strs]
-    sent_ids, sent_embeds, sent_enc_outputs, sent_sequence_length, \
-            sd_ids, sd_embeds, sd_enc_outputs, sd_sequence_length = \
-        zip(*encode_results)
+    sent_encoded = [
+        encode_sent(
+            data_batch['sent{}_text_ids'.format(ref_str)],
+            data_batch['sent{}_length'.format(ref_str)])
+        for ref_str in ref_strs]
+    sd_encoded = [
+        encode_sd(
+            {field: data_batch['{}{}_text_ids'.format(field, ref_str)][:, 1:-1]
+             for field in sd_fields},
+            data_batch['{}{}_length'.format(sd_fields[0], ref_str)] - 2)
+        for ref_str in ref_strs]
 
     # get rnn cell
     rnn_cell = tx.core.layers.get_rnn_cell(config_model.rnn_cell)
 
 
-    def get_decoder(cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
-                    beam_width=None):
+    def get_decoder(cell, y_, x, tgt_ref_flag, beam_width=None):
         output_layer_params = \
             {'output_layer': tf.identity} if copy_flag else \
             {'vocab_size': vocab.size}
@@ -231,19 +228,16 @@ def build_model(data_batch, data, step):
         if attn_flag: # attention
             if FLAGS.attn_x and FLAGS.attn_y_:
                 memory = tf.concat(
-                    [sent_enc_outputs[y__ref_flag],
-                     sd_enc_outputs[x_ref_flag]],
+                    [y_.enc_outputs,
+                     x.enc_outputs],
                     axis=1)
                 memory_sequence_length = None
             elif FLAGS.attn_y_:
-                memory = sent_enc_outputs[y__ref_flag]
-                memory_sequence_length = sent_sequence_length[y__ref_flag]
+                memory = y_.enc_outputs
+                memory_sequence_length = y_.length
             elif FLAGS.attn_x:
-                memory = sd_enc_outputs[x_ref_flag]
-                memory_sequence_length = sd_sequence_length[x_ref_flag]
-            else:
-                raise Exception(
-                    "Must specify either y__ref_flag or x_ref_flag.")
+                memory = x.enc_outputs
+                memory_sequence_length = x.length
             attention_decoder = tx.modules.AttentionRNNDecoder(
                 cell=cell,
                 memory=memory,
@@ -257,12 +251,12 @@ def build_model(data_batch, data, step):
 
         if copy_flag: # copynet
             kwargs = {
-                'y__ids': sent_ids[y__ref_flag][:, 1:],
-                'y__states': sent_enc_outputs[y__ref_flag][:, 1:],
-                'y__lengths': sent_sequence_length[y__ref_flag] - 1,
-                'x_ids': sd_ids[x_ref_flag]['entry'],
-                'x_states': sd_enc_outputs[x_ref_flag],
-                'x_lengths': sd_sequence_length[x_ref_flag],
+                'y__ids': y_.ids[:, 1:],
+                'y__states': y_.enc_outputs[:, 1:],
+                'y__lengths': y_.length - 1,
+                'x_ids': x.ids['entry'],
+                'x_states': x.enc_outputs,
+                'x_lengths': x.length,
             }
 
             if tgt_ref_flag is not None:
@@ -278,29 +272,10 @@ def build_model(data_batch, data, step):
             if FLAGS.copy_x:
                 memory_prefixes.append('x')
 
-            if FLAGS.sd_path:
-                assert FLAGS.copy_x
-
-                memory_prefixes.append('y_')
-
-                texts = []
-                for ref_flag in [x_ref_flag, y__ref_flag]:
-                    texts.extend(data_batch['{}{}_text'.format(field, ref_strs[ref_flag])][:, 1:-1]
-                                 for field in sd_fields)
-                texts.extend(data_batch['{}{}_text'.format(field, ref_strs[y__ref_flag])][:, 1:]
-                             for field in sent_fields)
-                match_align = tf.py_func(
-                    batch_get_match_align, texts, tf.float32, stateful=False,
-                    name='match_align')
-                match_align.set_shape(
-                    [texts[-1].shape[0], texts[0].shape[1], texts[-1].shape[1]])
-
             if beam_width is not None:
                 kwargs = {
                     name: tile_batch(value, beam_width)
                     for name, value in kwargs.items()}
-                if FLAGS.sd_path:
-                    match_align = tile_batch(match_align, beam_width)
 
             def get_get_copy_scores(memory_ids_states_lengths, output_size):
                 memory_copy_states = [
@@ -368,10 +343,10 @@ def build_model(data_batch, data, step):
         return decoder
 
     def get_decoder_and_outputs(
-            cell, y__ref_flag, x_ref_flag, tgt_ref_flag, params,
+            cell, y_, x, tgt_ref_flag, params,
             beam_width=None):
         decoder = get_decoder(
-            cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
+            cell, y_, x, tgt_ref_flag,
             beam_width=beam_width)
         if beam_width is None:
             ret = decoder(**params)
@@ -385,14 +360,15 @@ def build_model(data_batch, data, step):
     get_decoder_and_outputs = tf.make_template(
         'get_decoder_and_outputs', get_decoder_and_outputs)
 
-    def teacher_forcing(cell, y__ref_flag, x_ref_flag, loss_name):
+    def teacher_forcing(cell, y_, x_ref_flag, loss_name, add_bleu_weight=False):
+        x = sd_encoded[x_ref_flag]
         tgt_ref_flag = x_ref_flag
         tgt_str = 'sent{}'.format(ref_strs[tgt_ref_flag])
         sequence_length = data_batch['{}_length'.format(tgt_str)] - 1
         decoder, tf_outputs, final_state, _ = get_decoder_and_outputs(
-            cell, y__ref_flag, x_ref_flag, tgt_ref_flag,
+            cell, y_, x, tgt_ref_flag,
             {'decoding_strategy': 'train_greedy',
-             'inputs': sent_embeds[tgt_ref_flag],
+             'inputs': sent_encoded[tgt_ref_flag].embeds,
              'sequence_length': sequence_length})
 
         tgt_sent_ids = data_batch['{}_text_ids'.format(tgt_str)][:, 1:]
@@ -401,10 +377,9 @@ def build_model(data_batch, data, step):
             logits=tf_outputs.logits,
             sequence_length=sequence_length,
             average_across_batch=False)
-        if FLAGS.add_bleu_weight and y__ref_flag is not None \
-                and tgt_ref_flag is not None and y__ref_flag != tgt_ref_flag:
+        if add_bleu_weight:
             w = tf.py_func(
-                batch_bleu, [sent_ids[y__ref_flag], tgt_sent_ids],
+                batch_bleu, [y_.ids, tgt_sent_ids],
                 tf.float32, stateful=False, name='W_BLEU')
             w.set_shape(loss.get_shape())
             loss = w * loss
@@ -419,32 +394,33 @@ def build_model(data_batch, data, step):
                         tf.square(sum_copy_prob - 1.), memory_length),
                     1))
                 for sum_copy_prob, memory_length in zip(sum_copy_probs, memory_lengths)]
-            print_xe_loss_op = tf.print(loss_name, 'xe loss:', loss)
-            with tf.control_dependencies([print_xe_loss_op]):
-                for i, exact_coverage_loss in enumerate(exact_coverage_losses):
-                    print_op = tf.print(loss_name, 'exact coverage loss {:d}:'.format(i), exact_coverage_loss)
-                    with tf.control_dependencies([print_op]):
-                        loss += FLAGS.exact_cover_w * exact_coverage_loss
+            for i, exact_coverage_loss in enumerate(exact_coverage_losses):
+                loss += FLAGS.exact_cover_w * exact_coverage_loss
 
         losses[loss_name] = loss
 
         return decoder, tf_outputs, loss
 
 
-    def beam_searching(cell, y__ref_flag, x_ref_flag, beam_width):
+    def beam_searching(cell, y_, x, beam_width):
         start_tokens = tf.ones_like(data_batch['sent_length']) * \
             vocab.bos_token_id
         end_token = vocab.eos_token_id
 
-        decoder, bs_outputs, _, _ = get_decoder_and_outputs(
-            cell, y__ref_flag, x_ref_flag, None,
+        decoder, bs_outputs, _, bs_length = get_decoder_and_outputs(
+            cell, y_, x, None,
             {'embedding': embedders['sent'],
              'start_tokens': start_tokens,
              'end_token': end_token,
              'max_decoding_length': config_train.infer_max_decoding_length},
-            beam_width=config_train.infer_beam_width)
+            beam_width=beam_width)
 
-        return decoder, bs_outputs
+        return decoder, bs_outputs, bs_length
+
+
+    def greedy_decoding(cell, y_, x):
+        decoder, bs_outputs, bs_length = beam_searching(cell, y_, x, 1)
+        return bs_outputs.predicted_ids[:, :, 0], bs_length[:, 0]
 
 
     def build_align():
@@ -503,14 +479,19 @@ def build_model(data_batch, data, step):
                loss, tf_outputs, bs_outputs
 
 
-    decoder, tf_outputs, loss = teacher_forcing(rnn_cell, 1, 0, 'MLE')
-    rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, 1, 1, 'REC')
-    rec_weight = FLAGS.rec_w + FLAGS.rec_w_rate * tf.cast(step, tf.float32)
-    joint_loss = (1 - rec_weight) * loss + rec_weight * rec_loss
+    joint_loss = 0.
+    for flag in range(2):
+        rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, sent_encoded[1-flag], 1-flag, 'REC')
+        greedy_ids, greedy_length = greedy_decoding(rnn_cell, sent_encoded[1-flag], sd_encoded[flag])
+        greedy_ids = tf.concat([data_batch['sent_text_ids'][:, :1], tf.cast(greedy_ids, tf.int64)], axis=1)
+        greedy_length = 1 + greedy_length
+        greedy_encoded = encode_sent(greedy_ids, greedy_length)
+        bt_decoder, _, bt_loss = teacher_forcing(rnn_cell, greedy_encoded, 1-flag, 'BT')
+        joint_loss = joint_loss + (rec_loss + FLAGS.bt_w * bt_loss)
     losses['joint'] = joint_loss
 
-    tiled_decoder, bs_outputs = beam_searching(
-        rnn_cell, 1, 0, config_train.infer_beam_width)
+    tiled_decoder, bs_outputs, _ = beam_searching(
+        rnn_cell, sent_encoded[1], sd_encoded[0], config_train.infer_beam_width)
 
     align_sents, align_sds, align_loss, align_tf_outputs, align_bs_outputs = \
         build_align()
