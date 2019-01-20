@@ -26,8 +26,9 @@ sd_fields = ['entry', 'attribute', 'value']
 all_fields = sent_fields + sd_fields
 ref_strs = ['', '_ref']
 
-DataItem = collections.namedtuple('DataItem', sd_fields)
-
+class DataItem(collections.namedtuple('DataItem', sd_fields)):
+    def __str__(self):
+        return '|'.join(map(str, self))
 
 def pack_sd(paired_texts):
     return [DataItem(*_) for _ in zip(*paired_texts)]
@@ -62,6 +63,23 @@ def corpus_bleu(list_of_references, hypotheses, **kwargs):
 def read_sents_from_file(file_name):
     with open(file_name, 'r') as f:
         return list(map(str.split, f))
+
+def read_x(data_prefix, ref_flag, stage):
+    ref_str = ref_strs[ref_flag]
+    return list(map(
+        lambda paired_sents: list(map(
+            lambda tup: DataItem(*tup),
+            zip(*paired_sents))),
+        zip(*map(
+            lambda field: read_sents_from_file(
+                '{}{}{}.{}.txt'.format(data_prefix, field, ref_str, stage)),
+            sd_fields))))
+
+def read_y(data_prefix, ref_flag, stage):
+    ref_str = ref_strs[ref_flag]
+    field = sent_fields[0]
+    return read_sents_from_file(
+        '{}{}{}.{}.txt'.format(data_prefix, field, ref_str, stage))
 
 def divide_or_const(a, b, c=0.):
     try:
