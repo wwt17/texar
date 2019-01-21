@@ -780,7 +780,7 @@ def main():
 
             print('epoch: {} ({}), step: {}, '
                   'val BLEU: {:.2f}, test BLEU: {:.2f}'.format(
-                epoch, name, step, val_bleu, test_bleu))
+                epoch, ', '.join(names), step, val_bleu, test_bleu))
 
             _train_epoch(sess, summary_writer, 'train', train_ops, summary_ops, names)
 
