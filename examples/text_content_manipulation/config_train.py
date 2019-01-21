@@ -21,6 +21,20 @@ train = {
             }
         },
     },
+    'disc': {
+        'optimizer': {
+            'type': 'AdamOptimizer',
+            'kwargs': {
+                'learning_rate': 1e-3
+            }
+        },
+        'gradient_clip': {
+            'type': 'clip_by_global_norm',
+            'kwargs': {
+                'clip_norm': 15
+            }
+        },
+    },
     'align': {
         'optimizer': {
             'type': 'AdamOptimizer',

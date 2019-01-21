@@ -482,9 +482,10 @@ def build_model(data_batch, data, step):
 
     discriminator = tx.modules.UnidirectionalRNNClassifier(hparams=config_model.discriminator)
     def disc(y, x):
-        return discriminator(tf.concat([x.enc_outputs, y], axis=-1))
+        return discriminator(tf.concat([x.enc_outputs, y], axis=1))
 
     joint_loss = 0.
+    disc_loss = 0.
     for flag in range(2):
         xe_decoder, xe_outputs, xe_loss = teacher_forcing(rnn_cell, sent_encoded[1-flag], flag, 'XE')
         rec_decoder, rec_outputs, rec_loss = teacher_forcing(rnn_cell, sent_encoded[1-flag], 1-flag, 'REC')
@@ -501,9 +502,13 @@ def build_model(data_batch, data, step):
                  +      disc(rec_outputs.cell_output, sd_encoded[flag])[0][:, 0]
         adv_loss = tf.reduce_mean(adv_loss, 0)
 
+        disc_loss = disc_loss + adv_loss
         joint_loss = joint_loss + (rec_loss + FLAGS.bt_w * bt_loss + FLAGS.adv_w * adv_loss)
 
+    disc_loss = -disc_loss
+
     losses['joint'] = joint_loss
+    losses['disc'] = disc_loss
 
     tiled_decoder, bs_outputs, _ = beam_searching(
         rnn_cell, sent_encoded[1], sd_encoded[0], config_train.infer_beam_width)
@@ -512,8 +517,18 @@ def build_model(data_batch, data, step):
         build_align()
     losses['align'] = align_loss
 
+    disc_variables = discriminator.trainable_variables
+    other_variables = list(filter(lambda var: var not in disc_variables, tf.trainable_variables()))
+    variables_of_train_op = {
+        'joint': other_variables,
+        'disc': disc_variables,
+    }
+
     train_ops = {
-        name: get_train_op(losses[name], hparams=config_train.train[name])
+        name: get_train_op(
+            losses[name],
+            variables=variables_of_train_op.get(name, None),
+            hparams=config_train.train[name])
         for name in config_train.train}
 
     return train_ops, bs_outputs, \
@@ -602,7 +617,7 @@ def main():
         print('end _get_alignment')
 
 
-    def _train_epoch(sess, summary_writer, mode, train_op, summary_op):
+    def _train_epoch(sess, summary_writer, mode, train_ops, summary_ops, names):
         print('in _train_epoch')
 
         data_iterator.restart_dataset(sess, mode)
@@ -613,13 +628,14 @@ def main():
 
         while True:
             try:
-                loss, summary = sess.run((train_op, summary_op), feed_dict)
+                losses, summaries = sess.run((train_ops, summary_ops), feed_dict)
 
                 step = tf.train.global_step(sess, global_step)
 
-                print('step {:d}: loss = {:.6f}'.format(step, loss))
+                print('step {:d}:\t{}'.format(step, '\t'.join('{}: {:.6f}'.format(name, losses[name]) for name in names)))
 
-                summary_writer.add_summary(summary, step)
+                for summary in summaries.values():
+                    summary_writer.add_summary(summary, step)
 
                 if step % config_train.steps_per_eval == 0:
                     _eval_epoch(sess, summary_writer, 'val')
@@ -752,9 +768,10 @@ def main():
 
         epoch = 0
         while epoch < config_train.max_epochs:
-            name = 'align' if FLAGS.align else 'joint'
-            train_op = train_ops[name]
-            summary_op = summary_ops[name]
+            #name = 'align' if FLAGS.align else 'joint'
+            names = {'joint', 'disc'}
+            train_ops = {name: train_ops[name] for name in names}
+            summary_ops = {name: summary_ops[name] for name in names}
 
             val_bleu = _eval_epoch(sess, summary_writer, 'val')
             test_bleu = _eval_epoch(sess, summary_writer, 'test')
@@ -765,7 +782,7 @@ def main():
                   'val BLEU: {:.2f}, test BLEU: {:.2f}'.format(
                 epoch, name, step, val_bleu, test_bleu))
 
-            _train_epoch(sess, summary_writer, 'train', train_op, summary_op)
+            _train_epoch(sess, summary_writer, 'train', train_ops, summary_ops, names)
 
             epoch += 1
 
