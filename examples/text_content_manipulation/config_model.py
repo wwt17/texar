@@ -99,3 +99,12 @@ coverity_rnn_cell = {
         'num_units': coverity_dim,
     },
 }
+
+discriminator = {
+    'name': 'discriminator',
+    'rnn_cell': {
+        'kwargs': {
+            'num_units': dim
+        }
+    }
+}

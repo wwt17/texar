@@ -29,6 +29,7 @@ flags.DEFINE_string("config_data", "config_data_nba", "The data config.")
 flags.DEFINE_string("config_model", "config_model", "The model config.")
 flags.DEFINE_string("config_train", "config_train", "The training config.")
 flags.DEFINE_float("bt_w", 1., "Back-translation weight.")
+flags.DEFINE_float("adv_w", 0., "Adversarial loss weight.")
 flags.DEFINE_string("expr_name", "nba", "The experiment name. "
                     "Used as the directory name of run.")
 flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
@@ -479,15 +480,29 @@ def build_model(data_batch, data, step):
                loss, tf_outputs, bs_outputs
 
 
+    discriminator = tx.modules.UnidirectionalRNNClassifier(hparams=config_model.discriminator)
+    def disc(y, x):
+        return discriminator(tf.concat([x.enc_outputs, y], axis=-1))
+
     joint_loss = 0.
     for flag in range(2):
-        rec_decoder, _, rec_loss = teacher_forcing(rnn_cell, sent_encoded[1-flag], 1-flag, 'REC')
+        xe_decoder, xe_outputs, xe_loss = teacher_forcing(rnn_cell, sent_encoded[1-flag], flag, 'XE')
+        rec_decoder, rec_outputs, rec_loss = teacher_forcing(rnn_cell, sent_encoded[1-flag], 1-flag, 'REC')
+
         greedy_ids, greedy_length = greedy_decoding(rnn_cell, sent_encoded[1-flag], sd_encoded[flag])
         greedy_ids = tf.concat([data_batch['sent_text_ids'][:, :1], tf.cast(greedy_ids, tf.int64)], axis=1)
         greedy_length = 1 + greedy_length
         greedy_encoded = encode_sent(greedy_ids, greedy_length)
+
         bt_decoder, _, bt_loss = teacher_forcing(rnn_cell, greedy_encoded, 1-flag, 'BT')
-        joint_loss = joint_loss + (rec_loss + FLAGS.bt_w * bt_loss)
+
+        adv_loss = 2. * disc(rec_outputs.cell_output, sd_encoded[1-flag])[0][:, 1] \
+                 +      disc(xe_outputs.cell_output, sd_encoded[flag])[0][:, 0] \
+                 +      disc(rec_outputs.cell_output, sd_encoded[flag])[0][:, 0]
+        adv_loss = tf.reduce_mean(adv_loss, 0)
+
+        joint_loss = joint_loss + (rec_loss + FLAGS.bt_w * bt_loss + FLAGS.adv_w * adv_loss)
+
     losses['joint'] = joint_loss
 
     tiled_decoder, bs_outputs, _ = beam_searching(
