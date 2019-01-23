@@ -1,7 +1,7 @@
 from __future__ import print_function
 from __future__ import unicode_literals
 
-from texar.data import make_vocab as make_vocab
+from texar.data import make_vocab
 
 try:
     import codecs
