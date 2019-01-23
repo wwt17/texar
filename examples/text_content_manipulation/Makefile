@@ -25,4 +25,3 @@ data2text/res:
 extractor_models: data2text/roto-convie_1 data2text/roto-convie_2 data2text/roto-convie_3 data2text/roto-blstmie_1 data2text/roto-blstmie_2 data2text/roto-blstmie_3
 
 data2text/roto-convie_1 data2text/roto-convie_2 data2text/roto-convie_3 data2text/roto-blstmie_1 data2text/roto-blstmie_2 data2text/roto-blstmie_3:
-	scp daoyuan:wwt/texar/examples/text_content_manipulation/data2text/$@ data2text/
