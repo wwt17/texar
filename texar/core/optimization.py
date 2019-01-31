@@ -19,6 +19,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 from __future__ import division
 
+import re
 import tensorflow as tf
 
 from texar.hyperparams import HParams
@@ -31,7 +32,9 @@ __all__ = [
     "get_optimizer_fn",
     "get_learning_rate_decay_fn",
     "get_gradient_clip_fn",
-    "get_train_op"
+    "get_optimizer",
+    "get_train_op",
+    "AdamWeightDecayOptimizer",
 ]
 
 def default_optimization_hparams():
@@ -75,7 +78,8 @@ def default_optimization_hparams():
             - The string name or full module path of an optimizer class. \
             If the class name is provided, the class must be in module \
             :tf_main:`tf.train <train>`, \
-            :tf_main:`tf.contrib.opt <contrib/opt>` or :mod:`texar.custom`.
+            :tf_main:`tf.contrib.opt <contrib/opt>` or :mod:`texar.custom` \
+            , :mod:`texar.core.optimization`
             - An optimizer class.
             - An instance of an optimizer class.
 
@@ -103,7 +107,8 @@ def default_optimization_hparams():
 
             - "type" can be a decay function or its name or module path. If \
             function name is provided, it must be from module \
-            :tf_main:`tf.train <train>` or :mod:`texar.custom`.
+            :tf_main:`tf.train <train>` or :mod:`texar.custom`, \
+            :mod:`texar.core.optimization`.
 
             - "kwargs" is a `dict` of keyword arguments for the function \
             excluding arguments named "global_step" and "learning_rate".
@@ -125,8 +130,10 @@ def default_optimization_hparams():
         :tf_main:`tf.clip_by_average_norm <clip_by_average_norm>`, etc.
 
         "type" specifies the gradient clip function, and can be a function,
-        or its name or module path. If function name is provided, the
-        function must be from module :tf_main:`tf < >` or :mod:`texar.custom`.
+        or its name or mudule path. If function name is provided, the
+        function must be from module :tf_main:`tf < >` or :mod:`texar.custom`,
+        :mod:`texar.core.optimization`.
+
 
         "kwargs" specifies keyword arguments to the function, except arguments
         named "t" or "t_list".
@@ -198,19 +205,19 @@ def get_optimizer_fn(hparams=None):
     opt = hparams["type"]
     if isinstance(opt, tf.train.Optimizer):
         return opt, type(opt)
-    else:
-        opt_modules = ['tensorflow.train',
-                       'tensorflow.contrib.opt',
-                       'texar.custom']
-        try:
-            opt_class = utils.check_or_get_class(opt, opt_modules,
-                                                 tf.train.Optimizer)
-        except TypeError:
-            raise ValueError(
-                "Unrecognized optimizer. Must be string name of the "
-                "optimizer class, or the class which is a subclass of "
-                "tf.train.Optimizer, or an instance of the subclass of "
-                "Optimizer.")
+    opt_modules = ['tensorflow.train',
+                   'tensorflow.contrib.opt',
+                   'texar.core.optimization',
+                   'texar.custom']
+    try:
+        opt_class = utils.check_or_get_class(opt, opt_modules,
+                                             tf.train.Optimizer)
+    except TypeError:
+        raise ValueError(
+            "Unrecognized optimizer. Must be string name of the "
+            "optimizer class, or the class which is a subclass of "
+            "tf.train.Optimizer, or an instance of the subclass of "
+            "Optimizer.")
 
     def _get_opt(learning_rate=None):
         opt_kwargs = hparams["kwargs"].todict()
@@ -343,8 +350,65 @@ def get_gradient_clip_fn(hparams=None):
 
     return grad_clip_fn
 
+def _get_static_lr(learning_rate=None, optimizer_class=None, hparams=None):
+    """Return the base static learning_rate.
+        A helper function for creating the optimization function.
+    """
+    hparams = HParams(hparams, default_optimization_hparams())
+    opt_hparams = hparams['optimizer']
+    if learning_rate is None:
+        learning_rate = opt_hparams["kwargs"].get("learning_rate", None)
+    if learning_rate is None:
+        # Try to get learning_rate from the default value of the
+        # optimizer's argument
+        opt_argspec = utils.get_default_arg_values(optimizer_class.__init__)
+        learning_rate = opt_argspec.get("learning_rate", None)
+    return learning_rate
 
-def get_train_op(loss, variables=None, learning_rate=None,
+def get_optimizer(learning_rate=None, global_step=None, hparams=None):
+
+    """Creates a optimizer instance.
+    Args:
+        learning_rate (float or Tensor, optional): If `None`, learning rate
+            specified in :attr:`hparams`, or the default learning rate
+            of the optimizer will be used (if exists).
+        global_step (optional): A scalar int Tensor. Step counter to update on
+            each step unless :attr:`increment_global_step` is `False`.
+            Learning rate decay uses :attr:`global_step`.
+            If `None`, it will be fetched from the default graph (see
+            :tf_main:`tf.train.get_global_step <train/get_global_step>` for
+            more details). If it has not been created, no step will be
+            incremented with each weight update.
+        hparams (dict or HParams, optional): hyperparameters. Missing
+            hyperparameters are set to default values automatically. See
+            :func:`~texar.core.default_optimization_hparams` for
+            all hyperparameters and default values.
+
+    Returns:
+        optimizer: the tf.train.Optimizer instance specified in hparams.
+    """
+    hparams = HParams(hparams, default_optimization_hparams())
+
+    opt_hparams = hparams["optimizer"]
+    optimizer_fn, optimizer_class = get_optimizer_fn(opt_hparams)
+
+    static_lr = _get_static_lr(learning_rate, optimizer_class, hparams)
+
+    lr_decay_fn = get_learning_rate_decay_fn(hparams["learning_rate_decay"])
+    if lr_decay_fn is not None:
+        learning_rate = lr_decay_fn(learning_rate=static_lr,
+                                    global_step=global_step)
+    else:
+        learning_rate = static_lr
+
+    tf.summary.scalar("learning_rate", learning_rate)
+
+    optimizer = optimizer_fn(learning_rate=learning_rate)
+
+    return optimizer
+
+def get_train_op(loss, variables=None,
+                 optimizer=None, learning_rate=None,
                  global_step=None, increment_global_step=True, hparams=None):
     """Creates a training op.
 
@@ -355,6 +419,8 @@ def get_train_op(loss, variables=None, learning_rate=None,
         loss: A scalar Tensor representing the loss to minimize.
         variables (optional): A list of Variables to optimize. If
             `None`, all trainable variables are used.
+        optimizer (optional): An tf.train.Optimizer instance. If `None`,
+            use the setting in `hparams` to create the optimizer.
         learning_rate (float or Tensor, optional): If `None`, learning rate
             specified in :attr:`hparams`, or the default learning rate
             of the optimizer will be used (if exists).
@@ -376,37 +442,149 @@ def get_train_op(loss, variables=None, learning_rate=None,
             all hyperparameters and default values.
 
     Returns:
-        tuple: (train_op, global_step). If :attr:`global_step` is provided, the
-        same :attr:`global_step` variable is returned, otherwise a new global
-        step is created and returned.
+        train_op: the operator used for variables optimization.
     """
     hparams = HParams(hparams, default_optimization_hparams())
-
-    opt_hparams = hparams["optimizer"]
-    optimizer_fn, optimizer_class = get_optimizer_fn(opt_hparams)
-
-    if learning_rate is None:
-        learning_rate = opt_hparams["kwargs"].get("learning_rate", None)
-    if learning_rate is None:
-        # Try to get learning_rate from the default value of the
-        # optimizer's argument
-        opt_argspec = utils.get_default_arg_values(optimizer_class.__init__)
-        learning_rate = opt_argspec.get("learning_rate", None)
-
     grad_clip_fn = get_gradient_clip_fn(hparams["gradient_clip"])
 
-    lr_decay_fn = get_learning_rate_decay_fn(hparams["learning_rate_decay"])
+    if not isinstance(optimizer, tf.train.Optimizer):
+        opt_hparams = hparams["optimizer"]
+        optimizer_fn, optimizer_class = get_optimizer_fn(opt_hparams)
+        learning_rate = _get_static_lr(learning_rate, optimizer_class, hparams)
+        lr_decay_fn = get_learning_rate_decay_fn(
+            hparams["learning_rate_decay"])
+        train_op = tf.contrib.layers.optimize_loss(
+            loss=loss,
+            global_step=global_step,
+            learning_rate=learning_rate,
+            optimizer=optimizer_fn,
+            gradient_noise_scale=hparams["gradient_noise_scale"],
+            clip_gradients=grad_clip_fn,
+            learning_rate_decay_fn=lr_decay_fn,
+            variables=variables,
+            name=hparams["name"],
+            increment_global_step=increment_global_step)
 
-    train_op = tf.contrib.layers.optimize_loss(
-        loss=loss,
-        global_step=global_step,
-        learning_rate=learning_rate,
-        optimizer=optimizer_fn,
-        gradient_noise_scale=hparams["gradient_noise_scale"],
-        clip_gradients=grad_clip_fn,
-        learning_rate_decay_fn=lr_decay_fn,
-        variables=variables,
-        name=hparams["name"],
-        increment_global_step=increment_global_step)
+    else:
+        train_op = tf.contrib.layers.optimize_loss(
+            loss=loss,
+            global_step=global_step,
+            learning_rate=None,
+            optimizer=optimizer,
+            gradient_noise_scale=hparams["gradient_noise_scale"],
+            clip_gradients=grad_clip_fn,
+            variables=variables,
+            name=hparams["name"],
+            increment_global_step=increment_global_step)
 
     return train_op
+
+class AdamWeightDecayOptimizer(tf.train.Optimizer):
+    """
+    A basic Adam optimizer that includes "correct" L2 weight decay.
+    Copied from the google BERT repo.
+    Except that in `apply_gradient` function, we add the support to increment
+    the passed global step parameter, to make it more compatible to
+    tf.train.Optimizer implementation.
+    """
+
+    def __init__(self,
+                 learning_rate,
+                 weight_decay_rate=0.0,
+                 beta_1=0.9,
+                 beta_2=0.999,
+                 epsilon=1e-6,
+                 exclude_from_weight_decay=None,
+                 name="AdamWeightDecayOptimizer"):
+        """Constructs a AdamWeightDecayOptimizer."""
+        super(AdamWeightDecayOptimizer, self).__init__(False, name)
+
+        self.learning_rate = learning_rate
+        self.weight_decay_rate = weight_decay_rate
+        self.beta_1 = beta_1
+        self.beta_2 = beta_2
+        self.epsilon = epsilon
+        self.exclude_from_weight_decay = exclude_from_weight_decay
+
+    # pylint: disable=too-many-locals
+    def apply_gradients(self, grads_and_vars, global_step=None, name=None):
+        """See base class."""
+        # pylint: disable=redefined-argument-from-local
+        with tf.name_scope(name, self._name) as name:
+            assignments = []
+            for (grad, param) in grads_and_vars:
+                if grad is None or param is None:
+                    continue
+
+                param_name = self._get_variable_name(param.name)
+
+                m = tf.get_variable(
+                    name=param_name + "/adam_m",
+                    shape=param.shape.as_list(),
+                    dtype=tf.float32,
+                    trainable=False,
+                    initializer=tf.zeros_initializer())
+                v = tf.get_variable(
+                    name=param_name + "/adam_v",
+                    shape=param.shape.as_list(),
+                    dtype=tf.float32,
+                    trainable=False,
+                    initializer=tf.zeros_initializer())
+
+                # Standard Adam update.
+                next_m = (tf.multiply(self.beta_1, m)\
+                          + tf.multiply(1.0 - self.beta_1,
+                                        grad))
+                next_v = (tf.multiply(self.beta_2, v)\
+                          + tf.multiply(1.0 - self.beta_2,
+                                        tf.square(grad)))
+
+                update = next_m / (tf.sqrt(next_v) + self.epsilon)
+
+                # Just adding the square of the weights to the loss function is
+                # *not* the correct way of using L2 regularization/weight decay
+                # with Adam, since that will interact with the m and v
+                # parameters in strange ways.
+                # Instead we want ot decay the weights in a manner that doesn't
+                # interact with the m/v parameters.
+                # This is equivalent to adding the square
+                # of the weights to the loss with plain (non-momentum) SGD.
+                if self._do_use_weight_decay(param_name):
+                    update += self.weight_decay_rate * param
+
+                update_with_lr = self.learning_rate * update
+
+                next_param = param - update_with_lr
+
+                assignments.extend(
+                    [param.assign(next_param),
+                     m.assign(next_m),
+                     v.assign(next_v)])
+
+            update_ops = assignments
+            if global_step is None:
+                apply_updates = self._finish(update_ops, name)
+            else:
+                with tf.control_dependencies([self._finish(update_ops,
+                                                           "update")]):
+                    with tf.colocate_with(global_step):
+                        apply_updates = tf.assign_add(global_step, 1, name=name)
+
+        return apply_updates
+
+    def _do_use_weight_decay(self, param_name):
+        """Whether to use L2 weight decay for `param_name`."""
+        if not self.weight_decay_rate:
+            return False
+        if self.exclude_from_weight_decay:
+            for r in self.exclude_from_weight_decay:
+                if re.search(r, param_name) is not None:
+                    return False
+        return True
+
+    def _get_variable_name(self, param_name):
+        """Get the variable name from the tensor name."""
+        m = re.match("^(.*):\\d+$", param_name)
+        if m is not None:
+            param_name = m.group(1)
+        return param_name

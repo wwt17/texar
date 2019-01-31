@@ -29,6 +29,7 @@ Users can construct their own models at a high conceptual level just like assemb
 * Easy-to-use APIs: 1) Convenient automatic variable re-use---no worry about the complicated TF variable scopes; 2) PyTorch-like callable modules; 3) Rich configuration options for each module, all with default values; ...
 * Well-structured high-quality code of uniform design patterns and consistent styles. 
 * Clean, detailed [documentation](https://texar.readthedocs.io) and rich [examples](./examples).
+* **Distributed model training** with multiple GPUs.
 
 ### Library API Example
 Builds a (self-)attentional sequence encoder-decoder model, with different learning algorithms:
@@ -89,12 +90,12 @@ pip install -e .
 If you use Texar, please cite the [report](https://arxiv.org/abs/1809.00794) with the following BibTex entry:
 ```
 Texar: A Modularized, Versatile, and Extensible Toolkit for Text Generation
-Zhiting Hu, Haoran Shi, Zichao Yang, Bowen Tan, Tiancheng Zhao, Junxian He, Wentao Wang, Xingjiang Yu, Lianhui Qin, Di Wang, Xuezhe Ma, Hector Liu, Xiaodan Liang, Wanrong Zhu, Devendra Singh Sachan, Eric P. Xing
+Zhiting Hu, Haoran Shi, Zichao Yang, Bowen Tan, Tiancheng Zhao, Junxian He, Wentao Wang, Lianhui Qin, Di Wang, Xuezhe Ma, Hector Liu, Xiaodan Liang, Wanrong Zhu, Devendra Singh Sachan, Eric P. Xing
 2018
 
 @article{hu2018texar,
   title={Texar: A Modularized, Versatile, and Extensible Toolkit for Text Generation},
-  author={Hu, Zhiting and Shi, Haoran and Yang, Zichao and Tan, Bowen and Zhao, Tiancheng and He, Junxian and Wang, Wentao and Yu, Xingjiang and Qin, Lianhui and Wang, Di and others},
+  author={Hu, Zhiting and Shi, Haoran and Yang, Zichao and Tan, Bowen and Zhao, Tiancheng and He, Junxian and Wang, Wentao and Qin, Lianhui and Wang, Di and others},
   journal={arXiv preprint arXiv:1809.00794},
   year={2018}
 }
