@@ -29,8 +29,8 @@ from texar.modules import TransformerEncoder, TransformerDecoder
 from texar.utils import transformer_utils
 
 from utils import data_utils, utils
-from bleu_tool import bleu_wrapper
 from utils.preprocess import bos_token_id, eos_token_id
+from bleu_tool import bleu_wrapper
 # pylint: disable=invalid-name, too-many-locals
 
 flags = tf.flags
@@ -127,7 +127,6 @@ def main():
     predictions = decoder(
         memory=encoder_output,
         memory_sequence_length=encoder_input_length,
-        decoding_strategy='infer_greedy',
         beam_width=beam_width,
         alpha=config_model.alpha,
         start_tokens=start_tokens,
@@ -135,12 +134,8 @@ def main():
         max_decoding_length=config_data.max_decoding_length,
         mode=tf.estimator.ModeKeys.PREDICT
     )
-    if beam_width <= 1:
-        inferred_ids = predictions[0].sample_id
-    else:
-        # Uses the best sample by beam search
-        inferred_ids = predictions['sample_id'][:, :, 0]
-
+    # Uses the best sample by beam search
+    beam_search_ids = predictions['sample_id'][:, :, 0]
 
     saver = tf.train.Saver(max_to_keep=5)
     best_results = {'score': 0, 'epoch': -1}
@@ -163,11 +158,11 @@ def main():
                 tx.global_mode(): tf.estimator.ModeKeys.EVAL,
             }
             fetches = {
-                'inferred_ids': inferred_ids,
+                'beam_search_ids': beam_search_ids,
             }
             fetches_ = sess.run(fetches, feed_dict=feed_dict)
 
-            hypotheses.extend(h.tolist() for h in fetches_['inferred_ids'])
+            hypotheses.extend(h.tolist() for h in fetches_['beam_search_ids'])
             references.extend(r.tolist() for r in targets)
             hypotheses = utils.list_strip_eos(hypotheses, eos_token_id)
             references = utils.list_strip_eos(references, eos_token_id)
@@ -207,7 +202,8 @@ def main():
             hwords = tx.utils.str_join(hwords)
             rwords = tx.utils.str_join(rwords)
             hyp_fn, ref_fn = tx.utils.write_paired_text(
-                hwords, rwords, fname, mode='s')
+                hwords, rwords, fname, mode='s',
+                src_fname_suffix='hyp', tgt_fname_suffix='ref')
             logger.info('Test output writtn to file: %s', hyp_fn)
             print('Test output writtn to file: %s' % hyp_fn)
 
@@ -257,14 +253,25 @@ def main():
 
         if FLAGS.run_mode == 'train_and_evaluate':
             logger.info('Begin running with train_and_evaluate mode')
+
+            if tf.train.latest_checkpoint(FLAGS.model_dir) is not None:
+                logger.info('Restore latest checkpoint in %s' % FLAGS.model_dir)
+                saver.restore(sess, tf.train.latest_checkpoint(FLAGS.model_dir))
+
             step = 0
             for epoch in range(config_data.max_train_epoch):
                 step = _train_epoch(sess, epoch, step, smry_writer)
 
         elif FLAGS.run_mode == 'test':
             logger.info('Begin running with test mode')
+
+            logger.info('Restore latest checkpoint in %s' % FLAGS.model_dir)
             saver.restore(sess, tf.train.latest_checkpoint(FLAGS.model_dir))
+
             _eval_epoch(sess, 0, mode='test')
+
+        else:
+            raise ValueError('Unknown mode: {}'.format(FLAGS.run_mode))
 
 
 if __name__ == '__main__':
