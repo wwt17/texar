@@ -270,7 +270,6 @@ def build_model(batch, train_data, learning_rate):
     _bs_outputs = []
     for max_decoding_length, beam_width, alpha in config_train.infer_configs:
         bs_outputs = decoder(
-            decoding_strategy='infer_greedy',
             start_tokens=start_tokens,
             end_token=end_token,
             memory=enc_outputs,
@@ -278,10 +277,7 @@ def build_model(batch, train_data, learning_rate):
             beam_width=beam_width,
             alpha=alpha,
             max_decoding_length=max_decoding_length)
-        if beam_width <= 1:
-            bs_outputs = tf.expand_dims(bs_outputs[0].sample_id, -1)
-        else:
-            bs_outputs = bs_outputs['sample_id']
+        bs_outputs = bs_outputs['sample_id']
 
         _bs_outputs.append(bs_outputs)
 
