@@ -1,0 +1,7 @@
+tensorflow-gpu
+numpy
+munkres
+nltk
+h5py
+pyxdameraulevenshtein
+scikit-learn

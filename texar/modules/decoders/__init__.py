@@ -27,3 +27,4 @@ from texar.modules.decoders.tf_helpers import *
 from texar.modules.decoders.rnn_decoder_helpers import *
 from texar.modules.decoders.transformer_decoders import *
 from texar.modules.decoders.beam_search_decode import *
+from texar.modules.decoders.copynet_rnn_decoders import *

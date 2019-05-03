@@ -25,6 +25,7 @@ from tensorflow.contrib.seq2seq import \
     BeamSearchDecoder, tile_batch
 
 from texar.modules.decoders.rnn_decoder_base import RNNDecoderBase
+from texar.modules.decoders.copynet_rnn_decoders import CopyNetRNNDecoder
 # pylint: disable=too-many-arguments, protected-access, too-many-locals
 # pylint: disable=invalid-name
 
@@ -57,6 +58,35 @@ def _get_initial_state(initial_state,
         tiled_initial_state = zero_state.clone(cell_state=tiled_initial_state)
 
     return tiled_initial_state
+
+
+class _BeamSearchDecoder(BeamSearchDecoder):
+    """Slightly modify BeamSearchDecoder in order to allow more types of
+       output_layer.
+    """
+    def __init__(self,
+                 cell,
+                 embedding,
+                 start_tokens,
+                 end_token,
+                 initial_state,
+                 beam_width,
+                 output_layer=None,
+                 length_penalty_weight=0.0,
+                 coverage_penalty_weight=0.0,
+                 reorder_tensor_arrays=True):
+        # obviate output_layer type check
+        special = output_layer is not None and \
+            not isinstance(output_layer, tf.layers.Layer)
+        super(_BeamSearchDecoder, self).__init__(
+            cell, embedding, start_tokens, end_token, initial_state,
+            beam_width,
+            output_layer=None if special else output_layer,
+            length_penalty_weight=length_penalty_weight,
+            coverage_penalty_weight=coverage_penalty_weight,
+            reorder_tensor_arrays=reorder_tensor_arrays)
+        if special:
+            self._output_layer = tf.keras.layers.Lambda(output_layer)
 
 
 def beam_search_decode(decoder_or_cell,
@@ -190,6 +220,12 @@ def beam_search_decode(decoder_or_cell,
                 max_decoding_length=60)
     """
     if isinstance(decoder_or_cell, RNNDecoderBase):
+        if isinstance(decoder_or_cell, CopyNetRNNDecoder) and \
+                decoder_or_cell._selective_read:
+            raise NotImplementedError(
+                "beam_search_decode with CopyNetRNNDecoder with selective_read "
+                "is currently not supported. We may modify beam_search_decode "
+                "in the future.")
         cell = decoder_or_cell._get_beam_search_cell(beam_width=beam_width)
     elif isinstance(decoder_or_cell, tf.contrib.rnn.RNNCell):
         cell = decoder_or_cell
@@ -211,7 +247,7 @@ def beam_search_decode(decoder_or_cell,
         output_layer = decoder_or_cell.output_layer
 
     def _decode():
-        beam_docoder = BeamSearchDecoder(
+        beam_docoder = _BeamSearchDecoder(
             cell=cell,
             embedding=embedding,
             start_tokens=start_tokens,
