@@ -85,13 +85,13 @@ def _prepare_memory(memory_id,
             maxlen=tf.shape(nest.flatten(memory_state)[0])[1],
             dtype=nest.flatten(memory_state)[0].dtype)
         seq_len_batch_size = (
-            tf.dimension_value(memory_sequence_length.shape[0])
+            memory_sequence_length.shape[0].value
             or tf.shape(memory_sequence_length)[0])
     def _maybe_mask(m, seq_len_mask):
         rank = m.get_shape().ndims
         rank = rank if rank is not None else tf.rank(m)
-        extra_ones = tf.ones(rank - 2, dtype=tf.dtypes.int32)
-        m_batch_size = tf.dimension_value(m.shape[0]) or tf.shape(m)[0]
+        extra_ones = tf.ones(rank - 2, dtype=tf.int32)
+        m_batch_size = m.shape[0].value or tf.shape(m)[0]
         if memory_sequence_length is not None:
             message = ("memory_sequence_length and memory tensor batch sizes do not "
                        "match.")
@@ -176,10 +176,10 @@ class CopyingMechanism(object):
                     self.memory_layer(self._memory_state) if self.memory_layer  # pylint: disable=not-callable
                     else self._memory_state)
                 self._batch_size = (
-                    tf.dimension_value(self._keys.shape[0]) or
+                    self._keys.shape[0].value or
                     tf.shape(self._keys)[0])
                 self._memory_size = (
-                    tf.dimension_value(self._keys.shape[1]) or
+                    self._keys.shape[1].value or
                     tf.shape(self._keys)[1])
 
     def __call__(self, query, coverity_state):
@@ -484,8 +484,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             else:
                 final_state_tensor = nest.flatten(initial_cell_state)[-1]
                 state_batch_size = (
-                    tensor_shape.dimension_value(final_state_tensor.shape[0])
-                    or array_ops.shape(final_state_tensor)[0])
+                    final_state_tensor.shape[0].value
+                    or tf.shape(final_state_tensor)[0])
                 error_message = (
                     "When constructing CopyNetWrapper %s: " % self._base_name +
                     "Non-matching batch sizes between the memory "
@@ -620,7 +620,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         cell_output, next_cell_state = self._cell(inputs, cell_state)
 
         cell_batch_size = (
-            tf.dimension_value(cell_output.shape[0]) or
+            cell_output.shape[0].value or
             tf.shape(cell_output)[0])
         error_message = (
             "When applying CopyNetWrapper %s: " % self.name +

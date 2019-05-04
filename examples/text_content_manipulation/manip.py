@@ -182,6 +182,7 @@ def build_model(data_batch, data, step):
             vocab_size,
             cell=cell,
             generating_layer=generating_layer,
+            output_layer=lambda probs: tf.log(probs + FLAGS.eps),
             hparams=config_model.decoder)
 
         return decoder
@@ -422,10 +423,6 @@ def main():
         for i, bleu in enumerate(bleus):
             summary.value.add(
                 tag='{}/{}'.format(mode, get_bleu_name(i)), simple_value=bleu)
-        if FLAGS.eval_ie:
-            for name, value in {'precision': prec, 'recall': rec}.items():
-                summary.value.add(tag='{}/{}'.format(mode, name),
-                                  simple_value=value)
         summary_writer.add_summary(summary, step)
         summary_writer.flush()
 
