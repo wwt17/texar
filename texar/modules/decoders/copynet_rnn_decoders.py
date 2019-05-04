@@ -353,7 +353,8 @@ class BasicCopyingMechanism(CopyingMechanism):
         """
         dtype = copying_probability.dtype
         int_mask = tf.cast(
-            tf.equal(tf.expand_dims(last_ids, 1), self._memory_id),
+            tf.equal(tf.expand_dims(last_ids, 1),
+                     tf.cast(self._memory_id, last_ids.dtype)),
             tf.int32)
         int_sum_mask = tf.reduce_sum(int_mask, axis=1)
         mask = tf.cast(int_mask, dtype)
@@ -990,7 +991,8 @@ class CopyNetRNNDecoder(RNNDecoderBase):
 
             return bs_copy_cell
 
-    def _wrap_selective_read_contexts(inputs, copying_probability, last_ids):
+    def _wrap_selective_read_contexts(
+            self, inputs, copying_probability, last_ids):
         if self._cell._is_multi:
             all_copying_probabilities = copying_probability
         else:
