@@ -32,7 +32,7 @@ flags.DEFINE_string("restore_from", "", "The specific checkpoint path to "
                     "expr_name is used.")
 flags.DEFINE_float("exact_cover_w", 0., "Weight of exact coverage loss.")
 flags.DEFINE_float("eps", 1e-10, "epsilon used to avoid log(0).")
-flags.DEFINE_integer("disabled_vocab_size", 1272, "Disabled vocab size.")
+flags.DEFINE_integer("disabled_vocab_size", 1238, "Disabled vocab size.")
 FLAGS = flags.FLAGS
 
 config_data = importlib.import_module(FLAGS.config_data)
