@@ -1017,7 +1017,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             next_coverage_state = copying_mechanism.update_coverage_state(
                     previous_coverage_state[i], copying_probability,
                     cell_output) \
-                    if self._coverage is not None else ()
+                    if self._coverage else ()
             copying_probability_history = \
                 previous_copying_probability_history[i].write(
                     state.time, copying_probability) \
