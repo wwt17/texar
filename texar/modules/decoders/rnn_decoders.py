@@ -107,7 +107,7 @@ class BasicRNNDecoder(RNNDecoderBase):
 
     Args:
         cell (RNNCell, optional): An instance of
-            :tf_main:`RNNCell <ontrib/rnn/RNNCell>`. If `None`
+            :tf_main:`RNNCell <nn/rnn_cell/RNNCell>`. If `None`
             (default), a cell is created as specified in
             :attr:`hparams`.
         cell_dropout_mode (optional): A Tensor taking value of

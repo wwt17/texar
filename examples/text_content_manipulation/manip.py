@@ -150,16 +150,16 @@ def build_model(data_batch, data, step):
         #     memory_state=y_enc_outputs[y__flag][:, 1:],
         #     memory_sequence_length=y_sequence_length[y__flag] - 1,
         # )
-        x_coverity_cell = tx.core.get_rnn_cell(
-            config_model.coverity_rnn_cell)
+        x_coverage_cell = tx.core.get_rnn_cell(
+            config_model.coverage_rnn_cell)
         x_copying_mechanism = BasicCopyingMechanism(
             num_units=cell.output_size,
             memory_id=x_ids[x_flag]['value'],
             memory_state=x_enc_outputs[x_flag],
             memory_sequence_length=x_sequence_length[x_flag],
             activation=tf.tanh,
-            coverity_state_dim=config_model.coverity_state_dim,
-            coverity_cell=x_coverity_cell,
+            coverage_state_dim=config_model.coverage_state_dim,
+            coverage_cell=x_coverage_cell,
         )
 
         vocab_size = vocab.size

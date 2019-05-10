@@ -1,5 +1,5 @@
 dim = 384
-coverity_state_dim = 128
+coverage_state_dim = 128
 
 
 def get_embedder_hparams(dim, name):
@@ -59,7 +59,7 @@ decoder = {
     'name': 'decoder',
     'copying': {
         'copying_probability_history': True,
-        'coverity_state': True,
+        'coverage': True,
         'selective_read': False,
     }
 }
@@ -74,9 +74,9 @@ attention_decoder = {
     }
 }
 
-coverity_rnn_cell = {
+coverage_rnn_cell = {
     'type': 'GRUCell',
     'kwargs': {
-        'num_units': coverity_state_dim,
+        'num_units': coverage_state_dim,
     },
 }

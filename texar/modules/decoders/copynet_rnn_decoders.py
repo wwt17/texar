@@ -46,27 +46,26 @@ __all__ = [
 ]
 
 
-def _prepare_memory(memory_id,
-                    memory_state,
-                    memory_sequence_length,
-                    check_inner_dims_defined):
+def _prepare_memory(memory, memory_sequence_length, check_inner_dims_defined):
     """Convert to tensor and possibly mask `memory`.
+    This function is copied from Tensorflow attention_wrapper.py.
+
     Args:
         memory: `Tensor`, shaped `[batch_size, max_time, ...]`.
         memory_sequence_length: `int32` `Tensor`, shaped `[batch_size]`.
         check_inner_dims_defined: Python boolean.  If `True`, the `memory`
             argument's shape is checked to ensure all but the two outermost
             dimensions are fully defined.
+
     Returns:
         A (possibly masked), checked, new `memory`.
+
     Raises:
         ValueError: If `check_inner_dims_defined` is `True` and not
             `memory.shape[2:].is_fully_defined()`.
     """
-    memory_id = nest.map_structure(
-        lambda m: tf.convert_to_tensor(m, name="memory_id"), memory_id)
-    memory_state = nest.map_structure(
-        lambda m: tf.convert_to_tensor(m, name="memory_state"), memory_state)
+    memory = nest.map_structure(
+        lambda m: tf.convert_to_tensor(m, name="memory"), memory)
     if memory_sequence_length is not None:
         memory_sequence_length = tf.convert_to_tensor(
             memory_sequence_length, name="memory_sequence_length")
@@ -74,16 +73,16 @@ def _prepare_memory(memory_id,
         def _check_dims(m):
             if not m.get_shape()[2:].is_fully_defined():
                 raise ValueError(
-                    "Expected memory_state %s to have fully defined inner dims, "
+                    "Expected memory %s to have fully defined inner dims, "
                     "but saw shape: %s" % (m.name, m.get_shape()))
-        nest.map_structure(_check_dims, memory_state)
+        nest.map_structure(_check_dims, memory)
     if memory_sequence_length is None:
         seq_len_mask = None
     else:
         seq_len_mask = tf.sequence_mask(
             memory_sequence_length,
-            maxlen=tf.shape(nest.flatten(memory_state)[0])[1],
-            dtype=nest.flatten(memory_state)[0].dtype)
+            maxlen=tf.shape(nest.flatten(memory)[0])[1],
+            dtype=nest.flatten(memory)[0].dtype)
         seq_len_batch_size = (
             memory_sequence_length.shape[0].value
             or tf.shape(memory_sequence_length)[0])
@@ -93,8 +92,8 @@ def _prepare_memory(memory_id,
         extra_ones = tf.ones(rank - 2, dtype=tf.int32)
         m_batch_size = m.shape[0].value or tf.shape(m)[0]
         if memory_sequence_length is not None:
-            message = ("memory_sequence_length and memory tensor batch sizes do not "
-                       "match.")
+            message = ("memory_sequence_length and memory tensor batch sizes "
+                       "do not match.")
             with tf.control_dependencies([
                     tf.assert_equal(
                         seq_len_batch_size, m_batch_size, message=message)]):
@@ -104,11 +103,12 @@ def _prepare_memory(memory_id,
                 return m * seq_len_mask
         else:
             return m
-    return memory_id, \
-        nest.map_structure(lambda m: _maybe_mask(m, seq_len_mask), memory_state)
+    return nest.map_structure(lambda m: _maybe_mask(m, seq_len_mask), memory)
 
 
 def _maybe_mask_score(score, memory_sequence_length, score_mask_value):
+    """This function is copied from Tensorflow attention_wrapper.py.
+    """
     if memory_sequence_length is None:
         return score
     message = ("All values in memory_sequence_length must greater than zero.")
@@ -121,10 +121,41 @@ def _maybe_mask_score(score, memory_sequence_length, score_mask_value):
 
 
 class CopyingMechanism(object):
-    """A base CopyingMechanism class providing common functionality.
+    """An abstract base CopyingMechanism class providing common functionality.
+    This class is modified from _BaseAttentionMechanism in Tensorflow
+    attention_wrapper.py.
     Common functionality includes:
         1. Storing the query and memory layers.
-        2. Preprocessing and storing the memory.
+        2. Preprocessing and storing the memory_state.
+
+    Args:
+        memory_id: The memory ids to copy from.  This tensor should be
+            shaped `[batch_size, max_time]`.
+        memory_state: The memory states to get copying information; usually
+            the output of an encoder.  This tensor should be shaped
+            `[batch_size, max_time, state_dim]`.
+        memory_sequence_length (optional): Sequence lengths for the batch
+            entries in memory.  If provided, the memory_state tensor rows
+            are masked with zeros for values past the respective sequence
+            lengths.
+        memory_layer (optional): Instance of
+            :tf_main:`tf.layers.Layer <layers/Layer>` (may be None). The
+            layer's depth must match the depth of `query_layer`. If
+            `memory_layer` is not provided, the shape of `memory_state` must
+            match that of `query_layer`.
+        query_layer (optional): Callable.  Instance of
+            :tf_main:`tf.layers.Layer <layers/Layer>`.
+            The layer's depth must match the depth of `memory_layer`.
+            If `query_layer` is not provided, the shape of `query` must
+            match that of `memory_layer`.
+        check_inner_dims_defined (bool, optional): Python boolean.
+            If `True`, the `memory_state` argument's shape is checked to
+            ensure all but the two outermost dimensions are fully defined.
+        scope (optional): Instance of
+            :tf_main:`tf.VariableScope <VariableScope>` (may be None). The
+            scope to create variables within. If not provided, a
+            variable scope with name `name` is used.
+        name (str, optional): Name to use when creating ops.
     """
 
     def __init__(self,
@@ -136,41 +167,24 @@ class CopyingMechanism(object):
                  check_inner_dims_defined=True,
                  scope=None,
                  name=None):
-        """Construct base CopyingMechanism class.
-        Args:
-        memory: The memory to query; usually the output of an RNN encoder.  This
-            tensor should be shaped `[batch_size, max_time, ...]`.
-        memory_sequence_length (optional): Sequence lengths for the batch entries
-            in memory.  If provided, the memory tensor rows are masked with zeros
-            for values past the respective sequence lengths.
-        memory_layer: Instance of `tf.layers.Layer` (may be None).  The layer's
-            depth must match the depth of `query_layer`.
-            If `memory_layer` is not provided, the shape of `memory` must match
-            that of `query_layer`.
-        query_layer: Callable.  Instance of `tf.layers.Layer`.  The layer's depth
-            must match the depth of `memory_layer`.  If `query_layer` is not
-            provided, the shape of `query` must match that of `memory_layer`.
-        check_inner_dims_defined: Python boolean.  If `True`, the `memory`
-            argument's shape is checked to ensure all but the two outermost
-            dimensions are fully defined.
-        name: Name to use when creating ops.
-        """
         self._memory_layer = memory_layer
         self._query_layer = query_layer
         self.dtype = memory_layer.dtype
 
         if scope is None:
-            with tf.variable_scope(None, "basic_copying_mechanism") as scope:
+            with tf.variable_scope(name, "basic_copying_mechanism") as scope:
                 pass
         self._variable_scope = scope
+        self._name = name
 
         with tf.name_scope(
                 name, "CopyingMechanismInit",
                 nest.flatten(memory_id) + nest.flatten(memory_state)):
             with tf.variable_scope(self._variable_scope, reuse=tf.AUTO_REUSE):
-                self._memory_id, self._memory_state = _prepare_memory(
-                    memory_id, memory_state, memory_sequence_length,
+                self._memory_state = _prepare_memory(
+                    memory_state, memory_sequence_length,
                     check_inner_dims_defined=check_inner_dims_defined)
+                self._memory_id = memory_id
                 self._memory_sequence_length = memory_sequence_length
                 self._keys = (
                     self.memory_layer(self._memory_state) if self.memory_layer  # pylint: disable=not-callable
@@ -182,65 +196,202 @@ class CopyingMechanism(object):
                     self._keys.shape[1].value or
                     tf.shape(self._keys)[1])
 
-    def __call__(self, query, coverity_state):
+    def __call__(self, query, coverage_state):
+        """Obtain copying scores based on the query and coverage state.
+
+        Args:
+            query: Tensor of dtype matching `self.keys` and shape
+                `[batch_size, query_depth]`, where `query_depth` equals
+                `num_units`. The query vectors.
+            coverage_state: Tensor of dtype matching `self.keys` and shape
+                `[batch_size, memory_size, coverage_state_dim]`, where
+                `memory_size` is memory's `max_time` and `coverage_state_dim`
+                is the depth of coverage states. The previous coverage states.
+                If `()` is passed, coverage state is disabled.
+
+        Returns:
+            Copying scores for each memory location. Tensor of dtype matching
+            `self.keys` and shape `[batch_size, memory_size]`, where
+            `memory_size` is memory's `max_time`.
+        """
         raise NotImplementedError
 
     def map_to_vocab(self, copying_probability, vocab_size):
+        """Mapping copying probability distribution over memory to the
+        probability distribution over generating vocabulary.
+
+        Args:
+            copying_probability: Tensor of shape `[batch_size, memory_size]`.
+            vocab_size (int): The size of generating vocabulary.
+
+        Returns:
+            The result probability over generating vocabulary.
+        """
         raise NotImplementedError
 
     def initial_copying_probability(self, batch_size, dtype):
+        """Creates the initial copying probability.
+        
+        Args:
+            batch_size: int scalar, the batch_size.
+            dtype: The dtype.
+
+        Returns:
+            A `dtype` tensor shaped `[batch_size, memory_size]`
+            (`memory_size` is the memory's `max_time`).
+        """
         raise NotImplementedError
 
-    def initial_coverity_state(self, batch_size, dtype):
+    def initial_coverage_state(self, batch_size, dtype):
+        """Creates the initial coverage state.
+ 
+        Args:
+            batch_size: int scalar, the batch_size.
+            dtype: The dtype.
+
+        Returns:
+            A `dtype` tensor shaped `[batch_size, coverage_state_size]`.
+        """
         raise NotImplementedError
 
-    def update_coverity_state(self, coverity_state, copying_probability, cell_outputs):
+    def update_coverage_state(
+            self, coverage_state, copying_probability, cell_outputs):
+        """Update the coverage state. The coverage_cell is used here.
+
+        Args:
+            coverage_state: Tensor of shape
+                `[batch_size, memory_size * coverage_state_dim]`. The previous
+                coverage state to update.
+            copying_probability: Tensor of shape `[batch_size, memory_size]`.
+                The copying probability this step.
+            state: Tensor of shape `[batch_size, dim]`, where `dim` is the
+                depth of the state. The cell output state used.
+
+        Returns:
+            The updated coverage state, of the same shape as `coverage_state`.
+        """
         raise NotImplementedError
 
     def selective_read(self, last_ids, copying_probability):
+        """This method implements Eq.(9) in the paper.
+
+        Args:
+            last_ids: int Tensor of shape `[batch_size]`. The ids obtained in
+                previous step, i.e. y_{t-1}.
+            copying_probability: Tensor of shape `[batch_size, memory_size]`.
+                The copying probability of previous step.
+
+        Returns:
+            Tensor of shape `[batch_size, memory_state_dim]`, where the
+            `memory_state_dim` is the depth of `memory_state`.
+            The selective read context.
+        """
         raise NotImplementedError
 
     def _get_beam_search_copying_mechanism(self):
+        """Get the tiled instance of this instance used in beam searching.
+        All parameters are shared with the original one.
+
+        Args:
+            beam_width (int): The beam width. Used as the multiple of tiling.
+
+        Returns:
+            A tiled instance.
+        """
         raise NotImplementedError
 
     @property
     def memory_layer(self):
+        """The memory layer.
+        """
         return self._memory_layer
 
     @property
     def query_layer(self):
+        """The query layer.
+        """
         return self._query_layer
 
     @property
     def memory_id(self):
+        """The memory ids.
+        """
         return self._memory_id
 
     @property
     def memory_state(self):
+        """The memory states.
+        """
         return self._memory_state
 
     @property
     def keys(self):
+        """The (transformed) memory state used to calculate copying scores.
+        """
         return self._keys
 
     @property
     def batch_size(self):
+        """The batch size.
+        """
         return self._batch_size
 
     @property
     def memory_size(self):
+        """The memory size, i.e. the max_time of memory.
+        """
         return self._memory_size
 
     @property
-    def coverity_state_size(self):
+    def coverage_state_size(self):
+        """The state size of coverage states.
+        """
         raise NotImplementedError
 
     @property
     def variable_scope(self):
+        """The variable scope used to create variables within.
+        """
         return self._variable_scope
 
 
 class BasicCopyingMechanism(CopyingMechanism):
+    """Basic copying mechanism.
+    Implements the copying mechanism proposed in
+    https://arxiv.org/pdf/1603.06393.pdf. However, there're some differences:
+        1. "selective read" is not implemented.
+        2. Additional (optional) coverage module is implemented.
+
+    Args:
+        num_units: The depth of copying mechanism. This is used as the depth
+            of transformed memory_state, therefore must match expected the
+            query depth.
+        memory_id: The memory ids to copy from.  This tensor should be
+            shaped `[batch_size, max_time]`.
+        memory_state: The memory states to get copying information; usually
+            the output of an encoder.  This tensor should be shaped
+            `[batch_size, max_time, state_dim]`.
+        memory_sequence_length (optional): Sequence lengths for the batch
+            entries in memory.  If provided, the memory_state tensor rows
+            are masked with zeros for values past the respective sequence
+            lengths.
+        activation (optional): A callable. The activation function used after
+            merge transformed copying states with coverage states. Default to
+            :tf_main:`tf.tanh <tanh>` as described in the paper.
+        coverage_state_dim (int, optional): The depth of coverage state.
+            Ignored if coverage state is disabled.
+        coverage_cell (RNNCell, optional): An instance of
+            :tf_main:`RNNCell <nn/rnn_cell/RNNCell>`. The cell used to update
+            coverage states. Ignored if coverage state is disabled.
+        score_mask_value (optional): The float scalar used to mask output
+            copying scores in positions after `memory_sequence_length`. If not
+            provided, -inf is used.
+        scope (optional): Instance of
+            :tf_main:`tf.VariableScope <VariableScope>` (may be None). The
+            scope to create variables within. If not provided, a
+            variable scope with name `name` is used.
+        name (str, optional): Name to use when creating ops.
+    """
 
     def __init__(self,
                  num_units,
@@ -248,13 +399,11 @@ class BasicCopyingMechanism(CopyingMechanism):
                  memory_state,
                  memory_sequence_length=None,
                  activation=tf.tanh,
-                 coverity_state_dim=None,
-                 coverity_cell=None,
+                 coverage_state_dim=None,
+                 coverage_cell=None,
                  score_mask_value=None,
                  scope=None,
                  name="BasicCopyingMechanism"):
-        # For BasicCopyingMechanism, we only transform the memory layer; thus
-        # num_units **must** match expected the query depth.
         super(BasicCopyingMechanism, self).__init__(
             memory_id=memory_id,
             memory_state=memory_state,
@@ -269,39 +418,44 @@ class BasicCopyingMechanism(CopyingMechanism):
             name=name)
         self._num_units = num_units
         self._activation = activation
-        self._coverity_state_dim = coverity_state_dim
-        self._coverity_cell = coverity_cell
-        self._name = name
+        self._coverage_state_dim = coverage_state_dim
+        self._coverage_cell = coverage_cell
 
         if score_mask_value is None:
             score_mask_value = -np.inf
         self._score_mask_value = score_mask_value
 
-    def __call__(self, query, coverity_state):
-        """Score the query based on the keys and values.
+    def __call__(self, query, coverage_state):
+        """Obtain copying scores (i.e. phi_c in the paper) based on the query
+        and coverage state.
+
         Args:
-            query: Tensor of dtype matching `self.values` and shape
-                `[batch_size, query_depth]`.
-        state: Tensor of dtype matching `self.values` and shape
-            `[batch_size, alignments_size]`
-            (`alignments_size` is memory's `max_time`).
+            query: Tensor of dtype matching `self.keys` and shape
+                `[batch_size, query_depth]`, where `query_depth` equals
+                `num_units`. The query vectors.
+            coverage_state: Tensor of dtype matching `self.keys` and shape
+                `[batch_size, memory_size, coverage_state_dim]`, where
+                `memory_size` is memory's `max_time` and `coverage_state_dim`
+                is the depth of coverage states. The previous coverage states.
+                If `()` is passed, coverage state is disabled.
+
         Returns:
-            score: Tensor of dtype matching `self.values` and shape
-                `[batch_size, alignments_size]` (`alignments_size` is memory's
-                `max_time`).
+            Copying scores for each memory location. Tensor of dtype matching
+            `self.keys` and shape `[batch_size, memory_size]`, where
+            `memory_size` is memory's `max_time`.
         """
         with tf.variable_scope(
                 self._variable_scope,
-                values=[query, coverity_state],
+                values=[query, coverage_state],
                 reuse=tf.AUTO_REUSE):
             keys = self._keys
-            if coverity_state is not ():
-                coverity_state = tf.reshape(
-                    coverity_state,
-                    [tf.shape(coverity_state)[0], -1,
-                        self._coverity_state_dim])
+            if coverage_state is not ():
+                coverage_state = tf.reshape(
+                    coverage_state,
+                    [tf.shape(coverage_state)[0], -1,
+                        self._coverage_state_dim])
                 keys = keys + tf.layers.dense(
-                    coverity_state,
+                    coverage_state,
                     units=self._num_units,
                     activation=None,
                     use_bias=False)
@@ -312,6 +466,19 @@ class BasicCopyingMechanism(CopyingMechanism):
             return score
 
     def map_to_vocab(self, copying_probability, vocab_size):
+        """Mapping copying probability distribution over memory to the
+        probability distribution over generating vocabulary. This method
+        assumes the ordered vocabulary of memory_id is a prefix of the
+        generating vocabulary. Therefore
+        :tf_main:`tf.scatter_nd <scatter_nd>` is used.
+
+        Args:
+            copying_probability: Tensor of shape `[batch_size, memory_size]`.
+            vocab_size (int): The size of generating vocabulary.
+
+        Returns:
+            The result probability over generating vocabulary.
+        """
         batch_size = self._batch_size
         dtype = self._memory_id.dtype
         indices = tf.stack(
@@ -325,31 +492,75 @@ class BasicCopyingMechanism(CopyingMechanism):
             indices, copying_probability, [batch_size, vocab_size])
 
     def initial_copying_probability(self, batch_size, dtype):
+        """Creates the initial copying probability.
+ 
+        Args:
+            batch_size: int scalar, the batch_size.
+            dtype: The dtype.
+
+        Returns:
+            A `dtype` tensor shaped `[batch_size, memory_size]`
+            (`memory_size` is the memory's `max_time`).
+        """
         return tf.zeros([batch_size, self._memory_size], dtype=dtype,
                         name="initial_copying_probability")
 
-    def initial_coverity_state(self, batch_size, dtype):
-        return tf.zeros(
-            [batch_size, self._memory_size * self._coverity_state_dim],
-            dtype=dtype, name="initial_coverity_state")
+    def initial_coverage_state(self, batch_size, dtype):
+        """Creates the initial coverage state.
+ 
+        Args:
+            batch_size: int scalar, the batch_size.
+            dtype: The dtype.
 
-    def update_coverity_state(self, coverity_state, copying_probability, state):
-        coverity_state_shape = tf.shape(coverity_state)
+        Returns:
+            A `dtype` tensor shaped `[batch_size, coverage_state_size]`.
+        """
+        return tf.zeros(
+            [batch_size, self._memory_size * self._coverage_state_dim],
+            dtype=dtype, name="initial_coverage_state")
+
+    def update_coverage_state(self, coverage_state, copying_probability, state):
+        """Update the coverage state. The coverage_cell is used here.
+
+        Args:
+            coverage_state: Tensor of shape
+                `[batch_size, memory_size * coverage_state_dim]`. The previous
+                coverage state to update.
+            copying_probability: Tensor of shape `[batch_size, memory_size]`.
+                The copying probability this step.
+            state: Tensor of shape `[batch_size, dim]`, where `dim` is the
+                depth of the state. The cell output state used.
+
+        Returns:
+            The updated coverage state, of the same shape as `coverage_state`.
+        """
+        coverage_state_shape = tf.shape(coverage_state)
         shape = tf.shape(copying_probability)
         state = tf.broadcast_to(
             tf.expand_dims(state, 1),
             tf.concat([shape, [state.shape[-1]]], -1))
-        coverity_state = tf.reshape(
-            coverity_state, [-1, self._coverity_state_dim])
+        coverage_state = tf.reshape(
+            coverage_state, [-1, self._coverage_state_dim])
         copying_probability = tf.reshape(copying_probability, [-1, 1])
         state = tf.reshape(state, [-1, state.shape[-1]])
-        _, coverity_state = self._coverity_cell(
-            tf.concat([copying_probability, state], -1), coverity_state)
-        coverity_state = tf.reshape(coverity_state, coverity_state_shape)
-        return coverity_state
+        _, coverage_state = self._coverage_cell(
+            tf.concat([copying_probability, state], -1), coverage_state)
+        coverage_state = tf.reshape(coverage_state, coverage_state_shape)
+        return coverage_state
 
     def selective_read(self, last_ids, copying_probability):
-        """This method implements Eq.(9).
+        """This method implements Eq.(9) in the paper.
+
+        Args:
+            last_ids: int Tensor of shape `[batch_size]`. The ids obtained in
+                previous step, i.e. y_{t-1}.
+            copying_probability: Tensor of shape `[batch_size, memory_size]`.
+                The copying probability of previous step.
+
+        Returns:
+            Tensor of shape `[batch_size, memory_state_dim]`, where the
+            `memory_state_dim` is the depth of `memory_state`.
+            The selective read context.
         """
         dtype = copying_probability.dtype
         int_mask = tf.cast(
@@ -367,6 +578,15 @@ class BasicCopyingMechanism(CopyingMechanism):
         return tf.einsum("ij,ijk->ik", rho, self._memory_state)
 
     def _get_beam_search_copying_mechanism(self, beam_width):
+        """Get the tiled instance of this instance used in beam searching.
+        All parameters are shared with the original one.
+
+        Args:
+            beam_width (int): The beam width. Used as the multiple of tiling.
+
+        Returns:
+            A tiled instance.
+        """
         return BasicCopyingMechanism(
             self._num_units,
             tile_batch(self._memory_id, beam_width),
@@ -375,52 +595,63 @@ class BasicCopyingMechanism(CopyingMechanism):
                 None if self._memory_sequence_length is None else
                 tile_batch(self._memory_sequence_length, beam_width),
             activation=self._activation,
-            coverity_state_dim=self._coverity_state_dim,
-            coverity_cell=self._coverity_cell,
+            coverage_state_dim=self._coverage_state_dim,
+            coverage_cell=self._coverage_cell,
             scope=self._variable_scope,
             name="BeamSearch{}".format(self._name))
 
     @property
-    def coverity_state_size(self):
-        return self._memory_size * self._coverity_state_dim
+    def coverage_state_size(self):
+        """`memory_size * coverage_state_dim`.
+            (`memory_size` is the memory's `max_time`, and `coverage_state_dim`
+             is the depth of coverage state).
+            The state size of coverage states.
+        """
+        return self._memory_size * self._coverage_state_dim
 
 
 class CopyNetWrapperState(
     collections.namedtuple("CopyNetWrapperState",
                            ("cell_state", "time", "copying_probability",
-                            "copying_probability_history", "coverity_state"))):
-    """`namedtuple` storing the state of a `CopyNetWrapper`.
-    Contains:
-        - `cell_state`: The state of the wrapped `RNNCell` at the previous time
-            step.
-        - `attention`: The attention emitted at the previous time step.
-        - `time`: int32 scalar containing the current time step.
-        - `alignments`: A single or tuple of `Tensor`(s) containing the alignments
-            emitted at the previous time step for each attention mechanism.
-        - `alignment_history`: (if enabled) a single or tuple of `TensorArray`(s)
-            containing alignment matrices from all time steps for each attention
-            mechanism. Call `stack()` on each to convert to a `Tensor`.
-        - `attention_state`: A single or tuple of nested objects
-            containing attention mechanism state for each attention mechanism.
-            The objects may contain Tensors or TensorArrays.
+                            "copying_probability_history", "coverage_state"))):
+    """`namedtuple` storing the state of a
+    :class:`~texar.modules.CopyNetWrapper`.
+
+    Attributes:
+        cell_state: The state of the wrapped
+            :tf_main:`RNNCell <nn/rnn_cell/RNNCell>` at the previous time step.
+        time: int32 scalar containing the current time step.
+        copying_probability: A single or tuple of `Tensor` (s) containing the
+            copying probability obtained at the previous time step for each
+            copying mechanism.
+        copying_probability_history: (if enabled) a single or tuple of
+            `TensorArray` (s) containing copying probability matrices from all
+            time steps for each copying mechanism. Call `stack()` on each to
+            convert to a `Tensor`.
+        coverage_state: A single or tuple of nested objects
+            containing coverage state for each copying mechanism.
+            The objects may contain Tensors or `TensorArray` s.
     """
 
     def clone(self, **kwargs):
-        """Clone this object, overriding components provided by kwargs.
-        The new state fields' shape must match original state fields' shape. This
-        will be validated, and original fields' shape will be propagated to new
-        fields.
+        """Clone this object, overriding components provided by `kwargs`.
+        The new state fields' shape must match original state fields' shape.
+        This will be validated, and original fields' shape will be propagated to
+        new fields.
         Example:
-        ```python
-        initial_state = attention_wrapper.zero_state(dtype=..., batch_size=...)
-        initial_state = initial_state.clone(cell_state=encoder_state)
-        ```
+
+        .. code-block:: python
+
+            initial_state = copynet_wrapper.zero_state(dtype=..., batch_size=...)
+            initial_state = initial_state.clone(cell_state=encoder_state)
+
         Args:
-            **kwargs: Any properties of the state object to replace in the returned
-                `CopyNetWrapperState`.
+            **kwargs: Any properties of the state object to replace in the
+                returned :class:`~texar.modules.CopyNetWrapperState`.
         Returns:
-            A new `CopyNetWrapperState` whose properties are the same as
-            this one, except any overridden properties as provided in `kwargs`.
+            A new :class:`~texar.modules.CopyNetWrapperState` whose properties
+            are the same as this one, except any overridden properties as
+            provided in `kwargs`.
         """
         def with_same_shape(old, new):
             """Check and set new tensor's shape."""
@@ -435,7 +666,45 @@ class CopyNetWrapperState(
 
 
 class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
-    """Wraps another `RNNCell` with CopyNet.
+    """Wraps another :tf_main:`RNNCell <nn/rnn_cell/RNNCell>` with CopyNet.
+    This wrapper implements the main process of CopyNet model described in
+    https://arxiv.org/pdf/1608.05859.pdf. To completely implement the CopyNet
+    model, use this wrapper to wrap an
+    :tf_main:`AttentionWrapper <contrib/seq2seq/AttentionWrapper>` cell which
+    attends on the memory, and a
+    :class:`~texar.modules.BasicCopyingMechanism` with the same memory. Note
+    that such a model is not exactly the same as the model described in the
+    paper. To see their differences, please refer to
+    :class:`~texar.modules.BasicCopyingMechanism`. Other instances of
+    :class:`~texar.modules.CopyingMechanism` are also supported.
+
+    This function is copied and modified from Tensorflow
+    :tf_main:`AttentionWrapper <contrib/seq2seq/AttentionWrapper>` in
+    attention_wrapper.py.
+
+    Args:
+        cell: An instance of :tf_main:`RNNCell <nn/rnn_cell/RNNCell>`.
+        copying_mechanism: A list of :class:`~texar.modules.CopyingMechanism`
+            or a single instance.
+        vocab_size (int): The size of generating vocabulary.
+        copying_probability_history (bool, optional): Python boolean, whether
+            to store copying probability history from all time steps in the
+            final output state (currently stored as a time major
+            `TensorArray` on which you must call `stack()`).
+        coverage (bool, optional): Python boolean, whether to add coverage
+            modules. Default to `False`.
+        initial_cell_state (optional): The initial state value to use for the
+            cell when the user calls :meth:`zero_state`. Note that if this value
+            is provided now, and the user uses a `batch_size` argument of
+            :meth:`zero_state` which does not match the batch size of
+            `initial_cell_state`, proper behavior is not guaranteed.
+        generating_layer (optional): A callable taking the cell output as input
+            to generate the generating scores at each time step. If `None`
+            (default), a dense layer is used.
+        output_layer (optional): A callable taking the output probability as
+            input to generate the output at each time step. If `None`
+            (default), the output probability is the output.
+        name (optional): Name to use when creating ops.
     """
 
     def __init__(self,
@@ -443,9 +712,10 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                  copying_mechanism,
                  vocab_size,
                  copying_probability_history=False,
-                 coverity_state=True,
+                 coverage=False,
                  initial_cell_state=None,
                  generating_layer=None,
+                 output_layer=None,
                  name=None):
 
         super(CopyNetWrapper, self).__init__(name=name)
@@ -473,12 +743,14 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             generating_layer = tf.layers.Dense(
                 self._vocab_size, use_bias=False)
         self._generating_layer = generating_layer
+        self._output_layer = output_layer
 
         self._cell = cell
         self._copying_mechanism = copying_mechanism
         self._copying_mechanisms = copying_mechanisms
         self._copying_probability_history = copying_probability_history
-        self._coverity_state = coverity_state
+        self._coverage = coverage
+
         with tf.name_scope(name, "CopyNetWrapperInit"):
             if initial_cell_state is None:
                 self._initial_cell_state = None
@@ -491,13 +763,15 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                     "When constructing CopyNetWrapper %s: " % self._base_name +
                     "Non-matching batch sizes between the memory "
                     "(encoder output) and initial_cell_state.  Are you using "
-                    "the BeamSearchDecoder?  You may need to tile your initial state "
-                    "via the tf.contrib.seq2seq.tile_batch function with argument "
-                    "multiple=beam_width.")
+                    "the BeamSearchDecoder?  You may need to tile your "
+                    "initial state via the tf.contrib.seq2seq.tile_batch "
+                    "function with argument multiple=beam_width.")
                 with tf.control_dependencies(
-                        self._batch_size_checks(state_batch_size, error_message)):
+                        self._batch_size_checks(state_batch_size,
+                                                error_message)):
                     self._initial_cell_state = nest.map_structure(
-                        lambda s: array_ops.identity(s, name="check_initial_cell_state"),
+                        lambda s:
+                            tf.identity(s, name="check_initial_cell_state"),
                         initial_cell_state)
 
     def _batch_size_checks(self, batch_size, error_message):
@@ -508,13 +782,18 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
 
     def _item_or_tuple(self, seq):
         """Returns `seq` as tuple or the singular element.
-        Which is returned is determined by how the CopyingMechanism(s) were passed
-        to the constructor.
+        Which is returned is determined by how the
+        :class:`~texar.modules.CopyingMechanism` (s)
+        were passed to the constructor.
+
         Args:
             seq: A non-empty sequence of items or generator.
+
         Returns:
-            Either the values in the sequence as a tuple if CopyingMechanism(s)
-            were passed to the constructor as a sequence or the singular element.
+            Either the values in the sequence as a tuple if
+            :class:`~texar.modules.CopyingMechanism` (s)
+            were passed to the constructor as a sequence or the singular
+            element.
         """
         t = tuple(seq)
         if self._is_multi:
@@ -524,25 +803,41 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
 
     @property
     def copying_mechanism(self):
+        """The copying mechanism(s) passed into the constructor.
+        """
         return self._copying_mechanism
 
     @property
     def generating_layer(self):
+        """The generating layer.
+        """
         return self._generating_layer
 
     @property
+    def output_layer(self):
+        """The output layer.
+        """
+        return self._output_layer
+
+    @property
     def vocab_size(self):
+        """The generating vocabulary size.
+        """
         return self._vocab_size
 
     @property
     def output_size(self):
+        """The output size, which is equal to the generating vocabulary size.
+        """
         return self._vocab_size
 
     @property
     def state_size(self):
-        """The `state_size` property of `CopyNetWrapper`.
+        """The state size.
+
         Returns:
-            An `CopyNetWrapperState` tuple containing shapes used by this object.
+            An :class:`~texar.modules.CopyNetWrapperState` tuple containing
+            shapes used by this object.
         """
         return CopyNetWrapperState(
             cell_state=self._cell.state_size,
@@ -552,25 +847,30 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             copying_probability_history=self._item_or_tuple(
                 c.memory_size if self._copying_probability_history else ()
                 for c in self._copying_mechanisms),  # sometimes a TensorArray
-            coverity_state=self._item_or_tuple(
-                c.coverity_state_size if self._coverity_state else ()
+            coverage_state=self._item_or_tuple(
+                c.coverage_state_size if self._coverage else ()
                 for c in self._copying_mechanisms))
 
     def zero_state(self, batch_size, dtype):
-        """Return an initial (zero) state tuple for this `CopyNetWrapper`.
+        """Return an initial (zero) state tuple for this
+        :class:`~texar.modules.CopyNetWrapper`.
         **NOTE** Please see the initializer documentation for details of how
-        to call `zero_state` if using an `CopyNetWrapper` with a
-        `BeamSearchDecoder`.
+        to call `zero_state` if using an :class:`~texar.modules.CopyNetWrapper`
+        with a
+        :tf_main:`BeamSearchDecoder <contrib/seq2seq/BeamSearchDecoder>`.
+
         Args:
             batch_size: `0D` integer tensor: the batch size.
             dtype: The internal state data type.
+
         Returns:
-            An `CopyNetWrapperState` tuple containing zeroed out tensors and,
-            possibly, empty `TensorArray` objects.
+            An :class:`~texar.modules.CopyNetWrapperState` tuple containing
+            zeroed out tensors and, possibly, empty `TensorArray` objects.
+
         Raises:
             ValueError: (or, possibly at runtime, InvalidArgument), if
-                `batch_size` does not match the output size of the encoder passed
-                to the wrapper object at initialization time.
+                `batch_size` does not match the output size of the encoder
+                passed to the wrapper object at initialization time.
         """
         with tf.name_scope(type(self).__name__ + "ZeroState",
                            values=[batch_size]):
@@ -579,13 +879,14 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             else:
                 cell_state = self._cell.zero_state(batch_size, dtype)
             error_message = (
-                "When calling zero_state of CopyNetWrapper %s: " % self._base_name +
+                "When calling zero_state of CopyNetWrapper %s: "
+                % self._base_name +
                 "Non-matching batch sizes between the memory "
                 "(encoder output) and the requested batch size.  Are you using "
-                "the BeamSearchDecoder?  If so, make sure your encoder output has "
-                "been tiled to beam_width via tf.contrib.seq2seq.tile_batch, and "
-                "the batch_size= argument passed to zero_state is "
-                "batch_size * beam_width.")
+                "the BeamSearchDecoder?  If so, make sure your encoder output "
+                "has been tiled to beam_width via "
+                "tf.contrib.seq2seq.tile_batch, and the batch_size= argument "
+                "passed to zero_state is batch_size * beam_width.")
             with tf.control_dependencies(
                     self._batch_size_checks(batch_size, error_message)):
                 cell_state = nest.map_structure(
@@ -607,15 +908,46 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                         element_shape=copying_probability.shape)
                     if self._copying_probability_history else ()
                     for copying_probability in initial_copying_probabilities),
-                coverity_state=self._item_or_tuple(
-                    copying_mechanism.initial_coverity_state(batch_size, dtype)
-                    if self._coverity_state else ()
+                coverage_state=self._item_or_tuple(
+                    copying_mechanism.initial_coverage_state(batch_size, dtype)
+                    if self._coverage else ()
                     for copying_mechanism in self._copying_mechanisms))
 
     def call(self, inputs, state):
+        """Perform a step of CopyNet-wrapped RNN.
+            - Step 1: Call the wrapped `cell` with this input and its previous
+                state.
+            - Step 2: Get generating scores through `generating_layer`.
+            - Step 3: Get copying scores through `attention_mechanism`.
+            - Step 4: Calculate the generating and copying probabilities by
+                passing the score through normalization.
+            - Step 5 (Optional): Calculate the output by passing the output
+                probability through `output_layer`.
+
+        Args:
+            inputs: (Possibly nested tuple of) Tensor, the input at this time
+                step.
+            state: An instance of :class:`~texar.modules.CopyNetWrapperState`
+                containing tensors from the previous time step.
+
+        Returns:
+            A tuple `(output, next_state)`, where:
+                - `output` depending on `output_layer`. If `output_layer` is
+                    provided, it is the result after applying `output_layer`
+                    to the output probability; otherwise it is simply the
+                    output probability.
+                - `next_state` is an instance of
+                    :class:`~texar.modules.CopyNetWrapperState`
+                    containing the state calculated at this time step.
+
+        Raises:
+            TypeError: If `state` is not an instance of
+                :class:`~texar.modules.AttentionWrapperState`.
+        """
         if not isinstance(state, CopyNetWrapperState):
-          raise TypeError("Expected state to be instance of CopyNetWrapperState. "
-                          "Received type {} instead.".format(type(state)))
+            raise TypeError("Expected state to be instance of "
+                            "CopyNetWrapperState. Received type {} instead."
+                            .format(type(state)))
 
         cell_state = state.cell_state
         cell_output, next_cell_state = self._cell(inputs, cell_state)
@@ -627,8 +959,8 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             "When applying CopyNetWrapper %s: " % self.name +
             "Non-matching batch sizes between the memory "
             "(encoder output) and the query (decoder output).  Are you using "
-            "the BeamSearchDecoder?  You may need to tile your memory input via "
-            "the tf.contrib.seq2seq.tile_batch function with argument "
+            "the BeamSearchDecoder?  You may need to tile your memory input "
+            "via the tf.contrib.seq2seq.tile_batch function with argument "
             "multiple=beam_width.")
         with tf.control_dependencies(
                 self._batch_size_checks(cell_batch_size, error_message)):
@@ -637,24 +969,26 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
 
         # generating mode
         generating_score = self._generating_layer(cell_output)
-        max_generating_score = tf.reduce_max(generating_score, axis=1, keepdims=True)
+        max_generating_score = tf.reduce_max(
+            generating_score, axis=1, keepdims=True)
         max_score = max_generating_score
 
         # copying mode
         if self._is_multi:
-            previous_coverity_state = state.coverity_state
+            previous_coverage_state = state.coverage_state
             previous_copying_probability_history = \
                 state.copying_probability_history
         else:
-            previous_coverity_state = [state.coverity_state]
+            previous_coverage_state = [state.coverage_state]
             previous_copying_probability_history = \
                 [state.copying_probability_history]
 
         all_copying_scores = []
         for i, copying_mechanism in enumerate(self._copying_mechanisms):
             copying_score = copying_mechanism(
-                cell_output, coverity_state=previous_coverity_state[i])
-            max_copying_score = tf.reduce_max(copying_score, axis=1, keepdims=True)
+                cell_output, coverage_state=previous_coverage_state[i])
+            max_copying_score = tf.reduce_max(
+                copying_score, axis=1, keepdims=True)
             max_score = tf.maximum(max_score, max_copying_score)
 
             all_copying_scores.append(copying_score)
@@ -680,22 +1014,22 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         generating_probability = exp_generating_score / sum_exp_score
         output_probability = generating_probability
         all_copying_probabilities = []
-        all_next_coverity_states = []
+        all_next_coverage_states = []
         maybe_all_histories = []
         for i, (copying_mechanism, exp_copying_score) in enumerate(zip(
                 self._copying_mechanisms, all_exp_copying_scores)):
             copying_probability = exp_copying_score / sum_exp_score
             all_copying_probabilities.append(copying_probability)
-            next_coverity_state = copying_mechanism.update_coverity_state(
-                    previous_coverity_state[i], copying_probability,
+            next_coverage_state = copying_mechanism.update_coverage_state(
+                    previous_coverage_state[i], copying_probability,
                     cell_output) \
-                    if self._coverity_state is not None else ()
+                    if self._coverage is not None else ()
             copying_probability_history = \
                 previous_copying_probability_history[i].write(
                     state.time, copying_probability) \
                 if self._copying_probability_history else ()
 
-            all_next_coverity_states.append(next_coverity_state)
+            all_next_coverage_states.append(next_coverage_state)
             maybe_all_histories.append(copying_probability_history)
             copying_probability_over_vocab = copying_mechanism.map_to_vocab(
                 copying_probability, self._vocab_size)
@@ -708,9 +1042,13 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
             copying_probability=self._item_or_tuple(all_copying_probabilities),
             copying_probability_history=\
                 self._item_or_tuple(maybe_all_histories),
-            coverity_state=self._item_or_tuple(all_next_coverity_states))
+            coverage_state=self._item_or_tuple(all_next_coverage_states))
 
-        return output_probability, next_state
+        output = output_probability
+        if self._output_layer is not None:
+            output = self._output_layer(output)
+
+        return output, next_state
 
 
 class CopyNetRNNDecoderOutput(
@@ -736,7 +1074,7 @@ class CopyNetRNNDecoderOutput(
             hyperparameters, this is a Tensor of
             shape `[batch_size, max_time, cell_output_size]` after decoding
             the whole sequence.
-        copying_probability: A single or tuple of `Tensor`(s) containing the
+        copying_probability: A single or tuple of `Tensor` (s) containing the
             alignments emitted (at the previous time step/of all time steps)
             for each copying mechanism.
     """
@@ -784,7 +1122,7 @@ class CopyNetRNNDecoder(RNNDecoderBase):
     See :meth:`~texar.modules.RNNDecoderBase._build` for the inputs and outputs
     of the decoder. The decoder returns
     `(outputs, final_state, sequence_lengths)`, where `outputs` is an instance
-    of :class:`~texar.modules.AttentionRNNDecoderOutput`.
+    of :class:`~texar.modules.CopyNetRNNDecoderOutput`.
 
     Example:
 
@@ -800,7 +1138,7 @@ class CopyNetRNNDecoder(RNNDecoderBase):
 
             # Decodes while attending to the source
             dec_embedder = WordEmbedder(vocab_size=data.target_vocab.size, ...)
-            decoder = AttentionRNNDecoder(
+            decoder = CopyNetRNNDecoder(
                 memory=enc_outputs,
                 memory_sequence_length=data_batch['source_length'],
                 vocab_size=data.target_vocab.size)
@@ -834,7 +1172,7 @@ class CopyNetRNNDecoder(RNNDecoderBase):
 
         self._copy_cell_kwargs = {
             name: copy_hparams[name] for name in
-            {"copying_probability_history", "coverity_state"}
+            {"copying_probability_history", "coverage"}
         }
         self._initial_cell_state = initial_cell_state
         self._selective_read = copy_hparams["selective_read"]
@@ -864,13 +1202,10 @@ class CopyNetRNNDecoder(RNNDecoderBase):
         .. code-block:: python
 
             {
-                "copy": {
-                    "type": "LuongAttention",
-                    "kwargs": {
-                        "num_units": 256,
-                    },
-                    "alignment_history": False,
-                    "output_attention": True,
+                "copying": {
+                    "copying_probability_history": False,
+                    "coverage": False,
+                    "selective_read": True,
                 },
                 # The following hyperparameters are the same as with
                 # `BasicRNNDecoder`
@@ -885,81 +1220,29 @@ class CopyNetRNNDecoder(RNNDecoderBase):
                     "type": "SampleEmbeddingHelper",
                     "kwargs": {}
                 }
-                "name": "attention_rnn_decoder"
+                "name": "copynet_rnn_decoder"
             }
 
         Here:
 
-        "copy" : dict
-            Attention hyperparameters, including:
-
-            "type" : str or class or instance
-                The attention type. Can be an attention class, its name or
-                module path, or a class instance. The class must be a subclass
-                of :tf_main:`TF CopyingMechanism
-                <contrib/seq2seq/CopyingMechanism>`. If class name is
-                given, the class must be from modules
-                :tf_main:`tf.contrib.seq2seq <contrib/seq2seq>` or
-                :mod:`texar.custom`.
-
-                Example:
-
-                    .. code-block:: python
-
-                        # class name
-                        "type": "LuongAttention"
-                        "type": "BahdanauAttention"
-                        # module path
-                        "type": "tf.contrib.seq2seq.BahdanauMonotonicAttention"
-                        "type": "my_module.MyCopyingMechanismClass"
-                        # class
-                        "type": tf.contrib.seq2seq.LuongMonotonicAttention
-                        # instance
-                        "type": LuongAttention(...)
-
-            "kwargs" : dict
-                keyword arguments for the attention class constructor.
-                Arguments :attr:`memory` and
-                :attr:`memory_sequence_length` should **not** be
-                specified here because they are given to the decoder
-                constructor. Ignored if "type" is an attention class
-                instance. For example
-
-                Example:
-
-                    .. code-block:: python
-
-                        "type": "LuongAttention",
-                        "kwargs": {
-                            "num_units": 256,
-                            "probability_fn": tf.nn.softmax
-                        }
-
-                    Here "probability_fn" can also be set to the string name
-                    or module path to a probability function.
-
-                "alignment_history": bool
-                    whether to store alignment history from all time steps
-                    in the final output state. (Stored as a time major
+        "copying" : dict
+            Copying hyperparameters, including:
+                "copying_probability_history": bool
+                    whether to store copying probability history from all time
+                    steps in the final output state. (Stored as a time major
                     `TensorArray` on which you must call `stack()`.)
 
-                "output_attention": bool
-                    If `True` (default), the output at each time step is
-                    the attention value. This is the behavior of Luong-style
-                    attention mechanisms. If `False`, the output at each
-                    time step is the output of `cell`.  This is the
-                    beahvior of Bhadanau-style attention mechanisms.
-                    In both cases, the `attention` tensor is propagated to
-                    the next time step via the state and is used there.
-                    This flag only controls whether the attention mechanism
-                    is propagated up to the next cell in an RNN stack or to
-                    the top RNN output.
+                "coverage": bool
+                    Whether to enable coverage.
+
+                "selective_read": bool
+                    Whether to enable selective read.
         """
         hparams = RNNDecoderBase.default_hparams()
         hparams["name"] = "copynet_rnn_decoder"
         hparams["copying"] = {
             "copying_probability_history": False,
-            "coverity_state": True,
+            "coverage": False,
             "selective_read": True,
         }
         return hparams
