@@ -704,7 +704,7 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
         output_layer (optional): A callable taking the output probability as
             input to generate the output at each time step. If `None`
             (default), the output probability is the output.
-        name (optional): Name to use when creating ops.
+        name (str, optional): Name to use when creating ops.
     """
 
     def __init__(self,
@@ -915,13 +915,14 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
 
     def call(self, inputs, state):
         """Perform a step of CopyNet-wrapped RNN.
-            - Step 1: Call the wrapped `cell` with this input and its previous
-                state.
+
+            - Step 1: Call the wrapped `cell` with this input and its \
+                previous state.
             - Step 2: Get generating scores through `generating_layer`.
             - Step 3: Get copying scores through `attention_mechanism`.
-            - Step 4: Calculate the generating and copying probabilities by
+            - Step 4: Calculate the generating and copying probabilities by \
                 passing the score through normalization.
-            - Step 5 (Optional): Calculate the output by passing the output
+            - Step 5 (Optional): Calculate the output by passing the output \
                 probability through `output_layer`.
 
         Args:
@@ -931,18 +932,18 @@ class CopyNetWrapper(tf.nn.rnn_cell.RNNCell):
                 containing tensors from the previous time step.
 
         Returns:
-            A tuple `(output, next_state)`, where:
-                - `output` depending on `output_layer`. If `output_layer` is
-                    provided, it is the result after applying `output_layer`
-                    to the output probability; otherwise it is simply the
-                    output probability.
-                - `next_state` is an instance of
-                    :class:`~texar.modules.CopyNetWrapperState`
-                    containing the state calculated at this time step.
+            `(output, next_state)`, where
+
+            - `output`: if `output_layer` is provided, it is the result after \
+                applying `output_layer` to the output probability; otherwise \
+                it is simply the output probability.
+            - `next_state`: an instance of \
+                :class:`~texar.modules.CopyNetWrapperState` \
+                containing the state calculated at this time step.
 
         Raises:
             TypeError: If `state` is not an instance of
-                :class:`~texar.modules.AttentionWrapperState`.
+                :class:`~texar.modules.CopyNetWrapperState`.
         """
         if not isinstance(state, CopyNetWrapperState):
             raise TypeError("Expected state to be instance of "
