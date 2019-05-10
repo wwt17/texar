@@ -115,6 +115,34 @@ Decoders
 .. autoclass:: texar.modules.AttentionRNNDecoderOutput
     :members:
 
+:hidden:`CopyingMechanism`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. autoclass:: texar.modules.CopyingMechanism
+    :members:
+    :inherited-members:
+
+    .. automethod:: __call__
+
+:hidden:`BasicCopyingMechanism`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. autoclass:: texar.modules.BasicCopyingMechanism
+    :members:
+    :inherited-members:
+
+    .. automethod:: __call__
+
+:hidden:`CopyNetWrapperState`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. autoclass:: texar.modules.CopyNetWrapperState
+    :members:
+    :inherited-members:
+
+:hidden:`CopyNetWrapper`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. autoclass:: texar.modules.CopyNetWrapper
+    :members:
+    :inherited-members:
+
 :hidden:`beam_search_decode`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 .. autofunction:: texar.modules.beam_search_decode
