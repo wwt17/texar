@@ -15,7 +15,7 @@ import numpy as np
 import tensorflow as tf
 import texar as tx
 import pickle
-from texar.modules.decoders import BasicCopyingMechanism, CopyNetRNNDecoder
+from texar.modules.decoders import BasicCopyingMechanism, CopyNetWrapper
 from texar.core import get_train_op
 from utils import *
 
@@ -161,6 +161,10 @@ def build_model(data_batch, data, step):
             coverage_state_dim=config_model.coverage_state_dim,
             coverage_cell=x_coverage_cell,
         )
+        if beam_width is not None:
+            x_copying_mechanism = \
+                x_copying_mechanism._get_beam_search_copying_mechanism(
+                    beam_width)
 
         vocab_size = vocab.size
 
@@ -177,13 +181,22 @@ def build_model(data_batch, data, step):
                 [score[:, :4], disabled_score, score[:, 4:]], -1)
             return score
 
-        decoder = CopyNetRNNDecoder(
+        cell = CopyNetWrapper(
+            cell,
             x_copying_mechanism,
             vocab_size,
-            cell=cell,
             generating_layer=generating_layer,
             output_layer=lambda probs: tf.log(probs + FLAGS.eps),
-            hparams=config_model.decoder)
+            copying_probability_history=
+                config_model.copying_probability_history,
+            coverage=config_model.coverage,
+        )
+
+        decoder = tx.modules.BasicRNNDecoder(
+            cell=cell,
+            output_layer=tf.identity,
+            hparams=config_model.decoder
+        )
 
         return decoder
 

@@ -57,12 +57,9 @@ rnn_cell = {
 
 decoder = {
     'name': 'decoder',
-    'copying': {
-        'copying_probability_history': True,
-        'coverage': True,
-        'selective_read': False,
-    }
 }
+copying_probability_history = True
+coverage = True
 
 attention_decoder = {
     'name': 'attention_decoder',
