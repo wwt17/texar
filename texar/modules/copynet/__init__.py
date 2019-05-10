@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Modules of texar library decoders.
+Modules of texar library copynets.
 """
 
 from __future__ import absolute_import
@@ -21,9 +21,4 @@ from __future__ import print_function
 
 # pylint: disable=wildcard-import
 
-from texar.modules.decoders.rnn_decoder_base import *
-from texar.modules.decoders.rnn_decoders import *
-from texar.modules.decoders.tf_helpers import *
-from texar.modules.decoders.rnn_decoder_helpers import *
-from texar.modules.decoders.transformer_decoders import *
-from texar.modules.decoders.beam_search_decode import *
+from texar.modules.copynet.copynets import *

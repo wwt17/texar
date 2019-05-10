@@ -15,7 +15,7 @@ import numpy as np
 import tensorflow as tf
 import texar as tx
 import pickle
-from texar.modules.decoders import BasicCopyingMechanism, CopyNetWrapper
+from texar.modules import BasicCopyingMechanism, CopyNetWrapper
 from texar.core import get_train_op
 from utils import *
 
