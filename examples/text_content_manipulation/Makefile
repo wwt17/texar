@@ -1,9 +1,7 @@
 all: nba_data data2text
 
-nba_data: nba_data/gold.valid.txt nba_data/gold.test.txt
-
-nba_data/gold.valid.txt nba_data/gold.test.txt:
-	cd nba_data && python3 join_data.py
+nba_data:
+	git clone https://github.com/ZhitingHu/text_content_manipulation.git && mv text_content_manipulation nba_data
 
 data2text: rotowire roto-ie res extractor_models
 

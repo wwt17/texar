@@ -59,7 +59,7 @@ decoder = {
     'name': 'decoder',
 }
 copying_probability_history = True
-coverage = True
+coverage = False
 
 attention_decoder = {
     'name': 'attention_decoder',
