@@ -11,11 +11,12 @@ make
 pip3 install -r requirements.txt
 ```
 
-You also need to install [Texar](https://github.com/asyml/texar), a newly released NLP toolkits:
+See Makefile if any error occurs when running make or running the code later.
+
+You also need to install [Texar](https://github.com/asyml/texar).
 
 ```bash
-git clone https://github.com/asyml/texar.git
-cd texar && pip3 install -e .
+cd ../.. && pip3 install -e .
 ```
 
 ### For IE
@@ -27,7 +28,7 @@ If you'd like to evaluate IE after training, you have to ensure Lua Torch is ins
 The following command illustrates how to run an experiment:
 
 ```bash
-python3 manip.py --attn_x --attn_y_ --copy_x --rec_w 0.8 --expr_name ${EXPR_NAME}
+python3 manip.py --rec_w 0.8 --exact_cover_w 1 --expr_name ${EXPR_NAME}
 ```
 
 Where `${EXPR_NAME}` is the directory you'd like to store all the files related to your experiment, e.g. `my_expr`.

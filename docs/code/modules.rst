@@ -295,6 +295,37 @@ Memory
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 .. autofunction:: texar.modules.default_memnet_embed_fn_hparams
 
+CopyNet
+=======
+
+:hidden:`CopyingMechanism`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. autoclass:: texar.modules.CopyingMechanism
+    :members:
+    :inherited-members:
+
+    .. automethod:: __call__
+
+:hidden:`BasicCopyingMechanism`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. autoclass:: texar.modules.BasicCopyingMechanism
+    :members:
+    :inherited-members:
+
+    .. automethod:: __call__
+
+:hidden:`CopyNetWrapperState`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. autoclass:: texar.modules.CopyNetWrapperState
+    :members:
+    :inherited-members:
+
+:hidden:`CopyNetWrapper`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. autoclass:: texar.modules.CopyNetWrapper
+    :members:
+    :inherited-members:
+
 Policy
 =========
 
