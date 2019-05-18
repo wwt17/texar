@@ -453,7 +453,7 @@ class BasicCopyingMechanism(CopyingMechanism):
                     activation=None,
                     use_bias=False)
             keys = self._activation(keys)
-            score = tf.einsum("bim,bm->bi", self._memory_state, query)
+            score = tf.einsum("bim,bm->bi", keys, query)
             score = _maybe_mask_score(
                 score, self._memory_sequence_length, self._score_mask_value)
             return score
