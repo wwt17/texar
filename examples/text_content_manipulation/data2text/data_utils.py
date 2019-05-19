@@ -508,6 +508,8 @@ def get_multilabeled_data(tup, vocab, labeldict, max_len):
 
 
 def append_labelnums(labels):
+    if len(labels) == 0:
+        return
     max_num_labels = max(map(len, labels))
     print("max num labels", max_num_labels)
 
